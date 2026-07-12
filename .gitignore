@@ -1,0 +1,8 @@
+summaries/
+.env
+.claude/
+.telemetry/
+config.yaml
+.DS_Store
+.venv/
+evaluation/golden_queries.json

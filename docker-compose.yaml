@@ -1,0 +1,155 @@
+services:
+
+  # ── PostgreSQL + pgvector + Apache AGE ──────────────────────────────────────
+  postgres:
+    build:
+      context: ./database
+    container_name: poc-postgres
+    environment:
+      POSTGRES_PASSWORD: ${PGPASSWORD:-ragpassword}
+      POSTGRES_USER: raguser
+      POSTGRES_DB: ragdb
+    ports:
+      - "5433:5432"   # host:container — connect on 5433 from host/pgadmin
+    volumes:
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguser -d ragdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ── pgAdmin 4 (DB management UI) ─────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: poc-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # ── Retrieval API ─────────────────────────────────────────────────────────
+  retrieval:
+    build:
+      context: ./retrieval
+    container_name: poc-retrieval
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432           # internal container port
+      PGDATABASE: ragdb
+      PGUSER: raguser
+      PGPASSWORD: ${PGPASSWORD:-ragpassword}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
+      HNSW_EF_SEARCH: ${HNSW_EF_SEARCH:-400}
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/live')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Code Summarisation Agent ──────────────────────────────────────────────
+  code-summarisation-agent:
+    build:
+      context: ./code_summarisation
+    container_name: poc-summariser
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_MODEL: ${OPENAI_MODEL:-claude-sonnet-4-6}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      LOG_LEVEL: INFO
+    volumes:
+      - ./config.yaml:/config.yaml:ro   # filter rules for GitHub fetcher
+      - ./summaries:/app/temp   # summaries shared with indexing service
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Indexing (one-shot — run via: docker compose --profile ingest up indexing) ──
+  indexing:
+    build:
+      context: ./indexing
+    container_name: poc-indexing
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ragdb
+      PGUSER: raguser
+      PGPASSWORD: ${PGPASSWORD:-ragpassword}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
+      SUMMARIES_FILE: /summaries/summaries.json
+    volumes:
+      - ./summaries:/summaries:ro
+    profiles:
+      - ingest    # only starts when --profile ingest is passed
+
+  # ── Generation / RAG Query Service ────────────────────────────────────────
+  generation:
+    build:
+      context: ./generation
+    container_name: poc-generation
+    depends_on:
+      postgres:
+        condition: service_healthy
+      retrieval:
+        condition: service_healthy
+    environment:
+      RETRIEVAL_URL: http://retrieval:8000
+      DATABASE_URL: postgresql://raguser:${PGPASSWORD:-ragpassword}@postgres:5432/ragdb
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_MODEL: ${OPENAI_MODEL:-claude-sonnet-4-6}
+      DEFAULT_SOURCE: sample-service
+      LOG_LEVEL: INFO
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── React UI ──────────────────────────────────────────────────────────────
+  ui:
+    build:
+      context: ./ui
+    container_name: poc-ui
+    depends_on:
+      generation:
+        condition: service_healthy
+    environment:
+      VITE_GENERATION_URL: http://localhost:8002
+      VITE_RETRIEVAL_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  pgadmin_data:

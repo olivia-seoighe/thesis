@@ -1,0 +1,68 @@
+# Public-safe template configuration for repository ingestion.
+# Replace values with your own organization and repositories.
+
+github_org: your-org
+
+repos:
+  - service-a
+  - service-b
+  - service-c
+
+include_extensions:
+  - .cs
+  - .sql
+  - .json
+
+include_path_prefixes:
+  - k8s/base/atlas/migrations
+
+# Sources are tried in order; the first with any files wins.
+migrations:
+  output_file: schema_state.md
+  sources:
+    - name: atlas
+      path_prefix: k8s/base/atlas/migrations
+      exclude_files:
+        - atlas.sum
+    - name: flyway
+      path_prefix: flyway/sql
+
+exclude_dirs:
+  - bin
+  - obj
+  - "*.Tests"
+  - "*.ComponentTests"
+  - "*.Tests.Core"
+  - conf
+  - drivers
+  - lib
+  - prodTests
+  - Properties
+  - tf
+  - k8s/base
+  - k8s/overlays
+  - .git
+  - .github
+  - .vs
+  - .vscode
+  - .idea
+  - packages
+  - TestResults
+  - node_modules
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - .claude
+  - docs/diagrams/out/
+
+exclude_files:
+  - .manifest.json
+  - GitVersion.yml
+  - catalog-info.yaml
+  - asyncapi.yaml
+  - Program.cs
+  - docker-compose.yaml
+  - docker-compose-dev.yaml
+  - mkdocs.yaml
+  - "appsettings.*.json"
