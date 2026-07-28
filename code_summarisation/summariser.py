@@ -1,10 +1,13 @@
+import logging
 import os
 import re
 from typing import Optional
 
-from openai import AsyncOpenAI
+from anthropic import APIStatusError, APITimeoutError, AsyncAnthropic
 
 from prompts import format_migration_prompt, format_summary_prompt
+
+log = logging.getLogger(__name__)
 
 CORE_REQUIRED_HEADINGS = [
     "## Purpose",
@@ -25,7 +28,7 @@ class Summariser:
         kwargs: dict = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
-        self._client = AsyncOpenAI(**kwargs)
+        self._client = AsyncAnthropic(**kwargs)
 
     async def summarise(
         self,
@@ -35,6 +38,7 @@ class Summariser:
         content: str,
         language: str = "csharp",
         model: Optional[str] = None,
+        tenant_context: str,
     ) -> tuple[str, str, int, int]:
         """Return (summary_markdown, model_used, input_tokens, output_tokens)."""
         model_id = model or self.default_model
@@ -43,6 +47,7 @@ class Summariser:
             file_path=file_path,
             language=language,
             content=add_line_numbers(content),
+            tenant_context=tenant_context,
         )
 
         max_tokens = int(os.getenv("SUMMARISER_MAX_TOKENS", "4096"))
@@ -79,6 +84,7 @@ class Summariser:
         repo: str,
         files: list[tuple[str, str]],
         model: Optional[str] = None,
+        tenant_context: str,
     ) -> tuple[str, str, int, int]:
         """Aggregate ordered SQL migration files into a current-state schema summary.
 
@@ -96,7 +102,9 @@ class Summariser:
             parts.append(f"-- FILE: {file_path}\n{numbered}")
         aggregate_content = "\n\n".join(parts)
 
-        prompt = format_migration_prompt(repo=repo, content=aggregate_content)
+        prompt = format_migration_prompt(
+            repo=repo, content=aggregate_content, tenant_context=tenant_context
+        )
 
         max_tokens = int(os.getenv("SUMMARISER_MAX_TOKENS", "4096"))
         retry_max_tokens = int(os.getenv("SUMMARISER_RETRY_MAX_TOKENS", "8192"))
@@ -132,18 +140,28 @@ class Summariser:
         max_tokens: int,
     ) -> tuple[str, int, int]:
         """Generate one summary attempt and return content and token usage."""
-        response = await self._client.chat.completions.create(
-            model=model_id,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,  # low temperature for factual summaries
-            max_tokens=max_tokens,
-        )
+        try:
+            response = await self._client.messages.create(
+                model=model_id,
+                max_tokens=max_tokens,
+                temperature=0.1,  # low temperature for factual summaries
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except APIStatusError as exc:
+            if exc.status_code == 429:
+                log.warning("LLM rate limit hit. model=%s", model_id)
+            else:
+                log.error("LLM API error. model=%s status=%s", model_id, exc.status_code)
+            raise
+        except APITimeoutError:
+            log.warning("LLM request timed out. model=%s", model_id)
+            raise
 
-        summary = response.choices[0].message.content or ""
+        summary = response.content[0].text if response.content else ""
         summary = self._sanitize_summary(summary)
         usage = response.usage
-        input_tokens = usage.prompt_tokens if usage else 0
-        output_tokens = usage.completion_tokens if usage else 0
+        input_tokens = usage.input_tokens if usage else 0
+        output_tokens = usage.output_tokens if usage else 0
 
         return summary, input_tokens, output_tokens
 

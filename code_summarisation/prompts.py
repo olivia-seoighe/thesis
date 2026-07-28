@@ -18,8 +18,7 @@ The summary will be embedded and searched against natural language queries from 
 developers and operations staff. Write so that someone searching by service name, \
 Kafka topic, business rule, or business process would find this file.
 
-The codebase is an enterprise platform built from microservices that communicate \
-over Kafka, message buses, and external service integrations.
+{tenant_context}
 
 Repository: {repo}
 File: {file_path}
@@ -55,9 +54,10 @@ Use sub-sections below; include only those with at least one item.
 ## Configuration — exact keys, values, and defaults defined in this file only.
 ## Notable Error Handling — retry logic, dead-letter handling, fallback behaviour.
 
-File-type hints:
-- Controllers / handlers / API clients: usually include Public API Surface + \
-Service Dependencies + Configuration.
+File-type guidance:
+- Integration boundary files (Controllers / handlers / API clients): usually include \
+Public API Surface + Service Dependencies + Configuration. \
+(Key Business Logic is still required; write the fallback if none is present.)
 - SQL migrations: focus on Data Models; omit Public API Surface unless relevant.
 - Internal domain files: include Public API Surface only if there is a true \
 external contract.
@@ -71,6 +71,8 @@ MIGRATION_AGGREGATE_PROMPT = """\
 You are documenting the current effective database schema of the `{repo}` service \
 for a RAG system. You are given all SQL migration files in chronological order. \
 Each file is marked with a `-- FILE: <path>` header and line numbers.
+
+{tenant_context}
 
 Apply every migration mentally in order and describe the schema as it stands now. \
 Do not narrate migration history — only describe the final state.
@@ -104,19 +106,33 @@ Migration files (ordered, line-numbered):
 """
 
 
-def format_summary_prompt(*, repo: str, file_path: str, language: str, content: str) -> str:
+def format_summary_prompt(
+    *,
+    repo: str,
+    file_path: str,
+    language: str,
+    content: str,
+    tenant_context: str,
+) -> str:
     return SUMMARY_PROMPT.format(
         repo=repo,
         file_path=file_path,
         language=language,
         content=content,
         strict_rules=_STRICT_RULES,
+        tenant_context=tenant_context,
     )
 
 
-def format_migration_prompt(*, repo: str, content: str) -> str:
+def format_migration_prompt(
+    *,
+    repo: str,
+    content: str,
+    tenant_context: str,
+) -> str:
     return MIGRATION_AGGREGATE_PROMPT.format(
         repo=repo,
         content=content,
         strict_rules=_STRICT_RULES,
+        tenant_context=tenant_context,
     )

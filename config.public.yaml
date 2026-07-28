@@ -3,6 +3,10 @@
 
 github_org: your-org
 
+# Domain context injected into every LLM prompt so summaries are framed for your
+# system. Describe what it does, its main services, and how they fit together.
+tenant_context: "Describe your platform: its purpose, main services/apps, and how they interact"
+
 repos:
   - service-a
   - service-b
@@ -26,6 +30,8 @@ migrations:
         - atlas.sum
     - name: flyway
       path_prefix: flyway/sql
+    - name: flyway-database
+      path_prefix: database/flyway/sql
 
 exclude_dirs:
   - bin
