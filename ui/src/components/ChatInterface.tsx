@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { sendQuery } from '../api/client'
+import { getSources, sendQuery } from '../api/client'
 import type { Citation, Message } from '../types'
 import CitationCard from './CitationCard'
 
@@ -16,8 +16,9 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const SOURCES = ['sample-service']
-  const [source, setSource] = useState('sample-service')
+  const [sources, setSources] = useState<string[]>([])
+  const [source, setSource] = useState('')
+  const [mode, setMode] = useState('hybrid')
   const [topK, setTopK] = useState(5)
   const [activeConvId, setActiveConvId] = useState<string | null>(conversationId)
   const [latencyInfo, setLatencyInfo] = useState<string | null>(null)
@@ -31,6 +32,15 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  useEffect(() => {
+    getSources()
+      .then(list => {
+        setSources(list)
+        setSource(prev => prev || list[0] || '')
+      })
+      .catch(() => {})
+  }, [])
 
   const submit = async () => {
     const q = input.trim()
@@ -46,6 +56,7 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
     try {
       const res = await sendQuery(q, {
         source,
+        mode,
         topK,
         conversationId: activeConvId ?? undefined,
       })
@@ -58,7 +69,7 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
       }
       setMessages(prev => [...prev, asst])
       setLatencyInfo(
-        `total ${res.latency_ms.toFixed(0)}ms  ·  retrieval ${res.retrieval_latency_ms.toFixed(0)}ms  ·  generation ${res.generation_latency_ms.toFixed(0)}ms  ·  model ${res.model_used}`
+        `mode ${mode}  ·  total ${res.latency_ms.toFixed(0)}ms  ·  retrieval ${res.retrieval_latency_ms.toFixed(0)}ms  ·  generation ${res.generation_latency_ms.toFixed(0)}ms  ·  model ${res.model_used}`
       )
 
       if (!activeConvId) {
@@ -93,7 +104,17 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
             onChange={e => setSource(e.target.value)}
             style={{ border: '1px solid #cbd5e0', borderRadius: 6, padding: '3px 8px', fontSize: 12, background: '#fff', cursor: 'pointer' }}
           >
-            {SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+            {sources.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>
+          Mode
+          <select
+            value={mode}
+            onChange={e => setMode(e.target.value)}
+            style={{ border: '1px solid #cbd5e0', borderRadius: 6, padding: '3px 8px', fontSize: 12, background: '#fff', cursor: 'pointer' }}
+          >
+            {['hybrid', 'vector', 'keyword'].map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </label>
         <label style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>

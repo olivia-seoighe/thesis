@@ -6,6 +6,7 @@ class QueryRequest(BaseModel):
     query: str
     source: str = "sample-service"
     top_k: int = 5
+    mode: str = "hybrid"              # retrieval mode: hybrid | vector | keyword
     model: Optional[str] = None       # overrides OPENAI_MODEL
     conversation_id: Optional[str] = None  # pass to continue a conversation
 

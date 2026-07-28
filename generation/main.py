@@ -95,7 +95,7 @@ async def _db_upsert_conversation(conv: Conversation) -> None:
             conv.id,
             conv.title,
             json.dumps([m.model_dump() for m in conv.messages]),
-            conv.created_at,
+            datetime.fromisoformat(conv.created_at),
         )
 
 
@@ -146,9 +146,13 @@ async def _db_delete_conversation(conv_id: str) -> bool:
 
 # ── Retrieval helpers ─────────────────────────────────────────────────────────
 
-async def _hybrid_search(client: httpx.AsyncClient, query: str, source: str, top_k: int) -> list:
+RETRIEVAL_MODES = ("hybrid", "vector", "keyword")
+
+
+async def _retrieve(client: httpx.AsyncClient, query: str, source: str, top_k: int, mode: str) -> list:
+    mode = mode if mode in RETRIEVAL_MODES else "hybrid"
     resp = await client.get(
-        f"{RETRIEVAL_URL}/search/hybrid",
+        f"{RETRIEVAL_URL}/search/{mode}",
         params={"query": query, "source": source, "top_k": top_k},
         timeout=30,
     )
@@ -169,17 +173,17 @@ async def query(req: QueryRequest) -> QueryResponse:
     source = req.source or DEFAULT_SOURCE
     conv_id = req.conversation_id or str(uuid.uuid4())
 
-    # Hybrid retrieval — single call; RRF fusion happens inside the retrieval service
+    # Retrieval — vector, keyword, or hybrid (RRF) depending on req.mode
     t_ret_start = time.time()
     async with httpx.AsyncClient() as client:
         try:
-            hybrid_results = await _hybrid_search(client, req.query, source, req.top_k)
+            retrieval_results = await _retrieve(client, req.query, source, req.top_k, req.mode)
         except httpx.HTTPStatusError as exc:
             log.error(f"Retrieval failed: {exc}", exc_info=True)
             raise HTTPException(status_code=502, detail=f"Retrieval error: {exc}")
 
     retrieval_ms = (time.time() - t_ret_start) * 1000
-    merged_chunks = [chunk for response in hybrid_results for chunk in response.get("chunks", [])]
+    merged_chunks = [chunk for response in retrieval_results for chunk in response.get("chunks", [])]
 
     top_score = merged_chunks[0]["score"] if merged_chunks else 0.0
     if not merged_chunks:

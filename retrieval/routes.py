@@ -160,6 +160,15 @@ async def search_hybrid(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/sources")
+async def list_sources() -> dict:
+    """Return the distinct indexed sources (repositories) for the UI selector."""
+    rows = await vector_search_endpoint.search_client.fetch(
+        "SELECT DISTINCT source FROM document_embeddings WHERE source IS NOT NULL ORDER BY source"
+    )
+    return {"sources": [r["source"] for r in rows]}
+
+
 @router.get("/version")
 async def version() -> dict:
     return {

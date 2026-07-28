@@ -5,7 +5,7 @@ const RET_BASE = '/api/retrieval'
 
 export async function sendQuery(
   query: string,
-  opts: { source?: string; topK?: number; conversationId?: string; model?: string }
+  opts: { source?: string; topK?: number; conversationId?: string; model?: string; mode?: string }
 ): Promise<QueryResponse> {
   const res = await fetch(`${GEN_BASE}/query`, {
     method: 'POST',
@@ -14,12 +14,20 @@ export async function sendQuery(
       query,
       source: opts.source ?? 'sample-service',
       top_k: opts.topK ?? 5,
+      mode: opts.mode ?? 'hybrid',
       conversation_id: opts.conversationId,
       model: opts.model,
     }),
   })
   if (!res.ok) throw new Error(`Query failed: ${res.status} ${await res.text()}`)
   return res.json()
+}
+
+export async function getSources(): Promise<string[]> {
+  const res = await fetch(`${RET_BASE}/sources`)
+  if (!res.ok) throw new Error(`Sources failed: ${res.status}`)
+  const data = await res.json()
+  return data.sources ?? []
 }
 
 export async function listConversations(): Promise<Conversation[]> {
