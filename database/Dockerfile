@@ -11,6 +11,7 @@ FROM pgvector/pgvector:pg16
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
+    ca-certificates \
     postgresql-server-dev-16 \
     libreadline-dev \
     zlib1g-dev \

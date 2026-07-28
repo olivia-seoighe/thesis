@@ -103,7 +103,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
-      SUMMARIES_FILE: /summaries/summaries.json
+      SUMMARIES_DIR: /summaries
     volumes:
       - ./summaries:/summaries:ro
     profiles:

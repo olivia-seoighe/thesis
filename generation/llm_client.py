@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 
 from models import Citation
 from prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
@@ -29,7 +29,7 @@ class LLMClient:
         kwargs: dict = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
-        self._client = AsyncOpenAI(**kwargs)
+        self._client = AsyncAnthropic(**kwargs)
 
     async def generate(
         self,
@@ -43,7 +43,7 @@ class LLMClient:
         model_id = model or self.default_model
         context = _build_context_block(chunks)
 
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages: list[dict] = []
 
         if history:
             messages.extend(history)
@@ -53,14 +53,15 @@ class LLMClient:
             "content": USER_PROMPT_TEMPLATE.format(context=context, query=query),
         })
 
-        response = await self._client.chat.completions.create(
+        response = await self._client.messages.create(
             model=model_id,
-            messages=messages,
-            temperature=0.1,
             max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            temperature=0.1,
+            messages=messages,
         )
 
-        answer = response.choices[0].message.content or ""
+        answer = response.content[0].text if response.content else ""
         return answer, model_id
 
     async def close(self) -> None:

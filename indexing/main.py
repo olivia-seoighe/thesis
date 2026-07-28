@@ -1,6 +1,6 @@
 """Ingest GitHub code summaries into the RAG database.
 
-Expected JSON input (set SUMMARIES_FILE env var to the file path):
+Expected per-repo JSON input (SUMMARIES_DIR globs <dir>/*/summaries.json; SUMMARIES_FILE for one file):
 
     {
       "repository": "service_A",
@@ -16,7 +16,7 @@ Expected JSON input (set SUMMARIES_FILE env var to the file path):
     }
 
 Run locally:
-    SUMMARIES_FILE=./indexing/summaries/summaries.json python indexing/main.py
+    SUMMARIES_DIR=./summaries python indexing/main.py   # ingests every <repo>/summaries.json
 
 Run via Docker Compose:
     docker compose --profile ingest up indexing
@@ -116,16 +116,24 @@ def build_document(file_entry: dict, source: str) -> Document:
     )
 
 
+def _get_summary_files() -> list[Path]:
+    """Return the summaries.json files to ingest.
+
+    SUMMARIES_DIR (preferred) globs <dir>/*/summaries.json — one per repo.
+    SUMMARIES_FILE ingests a single file.
+    """
+    summaries_dir = os.getenv("SUMMARIES_DIR")
+    if summaries_dir:
+        paths = sorted(Path(summaries_dir).glob("*/summaries.json"))
+        if not paths:
+            logger.warning(f"No */summaries.json found under {summaries_dir}")
+        return paths
+    return [Path(os.environ["SUMMARIES_FILE"])]
+
+
 async def main() -> None:
-    summaries_file = os.environ["SUMMARIES_FILE"]
     skip_unchanged = os.getenv("SKIP_UNCHANGED", "false").lower() == "true"
-
-    with open(summaries_file) as f:
-        data = json.load(f)
-
-    files = data.get("files", [])
-    source = data.get("repository", "sample-service")
-    logger.info(f"Loaded {len(files)} files from {summaries_file} (source={source})")
+    summary_files = _get_summary_files()
 
     db = ConnectionManager()
     embedder = EmbeddingClient()
@@ -133,24 +141,32 @@ async def main() -> None:
     chunker = DocumentChunker()
 
     try:
-        for i, file_entry in enumerate(files, start=1):
-            doc = build_document(file_entry, source)
-            if not doc.text.strip():
-                logger.warning(f"Skipping empty summary: {doc.title}")
-                continue
+        for summaries_file in summary_files:
+            with open(summaries_file) as f:
+                data = json.load(f)
 
-            if skip_unchanged:
-                last_indexed_at = await indexer.get_last_indexed_at(doc.id)
-                last_modified = _parse_iso_datetime(doc.last_modified_date)
-                if last_indexed_at and last_modified and _is_unchanged(last_modified, last_indexed_at):
-                    logger.info(f"[{i}/{len(files)}] Skipping unchanged: {doc.title}")
+            files = data.get("files", [])
+            source = data.get("repository", "sample-service")
+            logger.info(f"Loaded {len(files)} files from {summaries_file} (source={source})")
+
+            for i, file_entry in enumerate(files, start=1):
+                doc = build_document(file_entry, source)
+                if not doc.text.strip():
+                    logger.warning(f"Skipping empty summary: {doc.title}")
                     continue
 
-            chunks = chunker.chunk(doc)
-            embedded_chunks = await embedder.embed_chunks(chunks)
-            await indexer.replace_document(doc, embedded_chunks)
+                if skip_unchanged:
+                    last_indexed_at = await indexer.get_last_indexed_at(doc.id)
+                    last_modified = _parse_iso_datetime(doc.last_modified_date)
+                    if last_indexed_at and last_modified and _is_unchanged(last_modified, last_indexed_at):
+                        logger.info(f"[{i}/{len(files)}] Skipping unchanged: {doc.title}")
+                        continue
 
-            logger.info(f"[{i}/{len(files)}] {doc.title} → {len(chunks)} chunk(s)")
+                chunks = chunker.chunk(doc)
+                embedded_chunks = await embedder.embed_chunks(chunks)
+                await indexer.replace_document(doc, embedded_chunks)
+
+                logger.info(f"[{i}/{len(files)}] {doc.title} → {len(chunks)} chunk(s)")
 
         logger.info("Ingest complete.")
     finally:

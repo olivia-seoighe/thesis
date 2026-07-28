@@ -1,8 +1,9 @@
 summaries/
+docs/
 .env
-.claude/
 .telemetry/
 config.yaml
 .DS_Store
 .venv/
+__pycache__/
 evaluation/golden_queries.json

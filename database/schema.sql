@@ -7,6 +7,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 --                READS, WRITES, SENDS_TO, RECEIVES_FROM, HAS_FK, BELONGS_TO
 CREATE EXTENSION IF NOT EXISTS age;
 
+SET search_path = ag_catalog, "$user", public;
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -16,6 +17,7 @@ BEGIN
     END IF;
 END;
 $$;
+RESET search_path;
 
 CREATE TABLE IF NOT EXISTS document_metadata (
     document_id        TEXT PRIMARY KEY,
