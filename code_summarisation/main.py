@@ -190,7 +190,8 @@ async def _summarise_repo(
     file_entries = skipped_entries + new_entries
 
     ran_migrations = False
-    schema_state_name = (migrations_cfg or {}).get("output_file", "schema_state.md")
+    _schema_base = (migrations_cfg or {}).get("output_file", "schema_state.md")
+    schema_state_name = f"{Path(_schema_base).stem}_{repo_name}{Path(_schema_base).suffix}"
     migration_already_done = not force and schema_state_name in existing
     if migration_files and not migration_already_done:
         try:
@@ -214,6 +215,7 @@ async def _summarise_repo(
             errors.append({"file_path": "migration_aggregate", "error": str(exc)})
     elif migration_already_done:
         log.info("Skipping migration aggregate (already summarised). repo=%s", repo_name)
+        file_entries.append(existing[schema_state_name])
         ran_migrations = True
 
     repo_dir = TEMP_DIR / repo_name
@@ -309,12 +311,13 @@ async def summarize_migrations(req: MigrationAggregateRequest) -> SummarizeRespo
         log.error("Migration aggregate LLM call failed. repo=%s error=%s", req.repo, exc, exc_info=True)
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}")
 
-    out_path = TEMP_DIR / "schema_state.md"
+    schema_state_name = f"schema_state_{req.repo.split('/')[-1]}.md"
+    out_path = TEMP_DIR / schema_state_name
     out_path.write_text(f"<!-- repo: {req.repo} -->\n\n{summary}")
     log.info("Wrote migration aggregate. path=%s repo=%s files=%d", out_path, req.repo, len(ordered))
 
     return SummarizeResponse(
-        file_path="schema_state.md",
+        file_path=schema_state_name,
         url="",
         summary=summary,
         model_used=model_used,
