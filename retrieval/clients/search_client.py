@@ -185,31 +185,102 @@ class SearchClient:
             async with pool.acquire() as conn:
                 search_start = time.time()
 
-                for source in request.sources:
-                    query_params: list = [query_vector_text, source, request.top_k]
+                sources_to_search = request.sources or []
 
+                if sources_to_search:
+                    for source in sources_to_search:
+                        query_params: list = [query_vector_text, source, request.top_k]
+
+                        if request.entity_filter:
+                            entity_pattern = f"%{request.entity_filter}%"
+                            entity_tsquery = request.entity_filter.lower().replace(" ", " & ")
+                            query_params.extend([entity_pattern, entity_tsquery])
+
+                            # Pre-filter by entity, compute distances on the filtered set.
+                            # Uses computed score (not native distance ordering) to force
+                            # exact scan -- HNSW iterative scan fails with selective entity
+                            # filters that match few rows.
+                            sql = """
+                                WITH filtered AS (
+                                    SELECT chunk_id,
+                                           1 - (embedding_3072 <=> $1::halfvec) AS score
+                                    FROM document_embeddings
+                                    WHERE source = $2
+                                      AND embedding_3072 IS NOT NULL
+                                      AND (
+                                        document_title ILIKE $4
+                                        OR tsv @@ to_tsquery('english', $5)
+                                      )
+                                    ORDER BY score DESC
+                                    LIMIT $3
+                                )
+                                SELECT
+                                    de.chunk_id,
+                                    de.text,
+                                    de.source_code,
+                                    de.document_id,
+                                    dm.name,
+                                    dm.url,
+                                    (de.metadata)::jsonb AS metadata,
+                                    de.source,
+                                    dm.last_modified_date,
+                                    f.score
+                                FROM filtered f
+                                JOIN document_embeddings de ON de.chunk_id = f.chunk_id
+                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                ORDER BY f.score DESC;
+                            """
+                        else:
+                            # HNSW-optimized: native distance ordering enables index scan.
+                            # CTE avoids reading large columns for all candidates.
+                            sql = """
+                                WITH nearest AS (
+                                    SELECT chunk_id,
+                                           embedding_3072 <=> $1::halfvec AS distance
+                                    FROM document_embeddings
+                                    WHERE source = $2
+                                      AND embedding_3072 IS NOT NULL
+                                    ORDER BY embedding_3072 <=> $1::halfvec ASC
+                                    LIMIT $3
+                                )
+                                SELECT
+                                    de.chunk_id,
+                                    de.text,
+                                    de.source_code,
+                                    de.document_id,
+                                    dm.name,
+                                    dm.url,
+                                    (de.metadata)::jsonb AS metadata,
+                                    de.source,
+                                    dm.last_modified_date,
+                                    1 - n.distance AS score
+                                FROM nearest n
+                                JOIN document_embeddings de ON de.chunk_id = n.chunk_id
+                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                ORDER BY n.distance ASC;
+                            """
+
+                        rows = await conn.fetch(sql, *query_params)
+                        all_rows.extend(rows)
+                        logger.debug(f"Source '{source}' returned {len(rows)} results")
+                else:
+                    # Full corpus search — no source filter
                     if request.entity_filter:
                         entity_pattern = f"%{request.entity_filter}%"
                         entity_tsquery = request.entity_filter.lower().replace(" ", " & ")
-                        query_params.extend([entity_pattern, entity_tsquery])
-
-                        # Pre-filter by entity, compute distances on the filtered set.
-                        # Uses computed score (not native distance ordering) to force
-                        # exact scan -- HNSW iterative scan fails with selective entity
-                        # filters that match few rows.
+                        query_params = [query_vector_text, request.top_k, entity_pattern, entity_tsquery]
                         sql = """
                             WITH filtered AS (
                                 SELECT chunk_id,
                                        1 - (embedding_3072 <=> $1::halfvec) AS score
                                 FROM document_embeddings
-                                WHERE source = $2
-                                  AND embedding_3072 IS NOT NULL
+                                WHERE embedding_3072 IS NOT NULL
                                   AND (
-                                    document_title ILIKE $4
-                                    OR tsv @@ to_tsquery('english', $5)
+                                    document_title ILIKE $3
+                                    OR tsv @@ to_tsquery('english', $4)
                                   )
                                 ORDER BY score DESC
-                                LIMIT $3
+                                LIMIT $2
                             )
                             SELECT
                                 de.chunk_id,
@@ -228,17 +299,15 @@ class SearchClient:
                             ORDER BY f.score DESC;
                         """
                     else:
-                        # HNSW-optimized: native distance ordering enables index scan.
-                        # CTE avoids reading large columns for all candidates.
+                        query_params = [query_vector_text, request.top_k]
                         sql = """
                             WITH nearest AS (
                                 SELECT chunk_id,
                                        embedding_3072 <=> $1::halfvec AS distance
                                 FROM document_embeddings
-                                WHERE source = $2
-                                  AND embedding_3072 IS NOT NULL
+                                WHERE embedding_3072 IS NOT NULL
                                 ORDER BY embedding_3072 <=> $1::halfvec ASC
-                                LIMIT $3
+                                LIMIT $2
                             )
                             SELECT
                                 de.chunk_id,
@@ -256,10 +325,9 @@ class SearchClient:
                             LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
                             ORDER BY n.distance ASC;
                         """
-
                     rows = await conn.fetch(sql, *query_params)
                     all_rows.extend(rows)
-                    logger.debug(f"Source '{source}' returned {len(rows)} results")
+                    logger.debug(f"Full corpus search returned {len(rows)} results")
 
                 search_duration = (time.time() - search_start) * 1000
 
@@ -297,7 +365,7 @@ class SearchClient:
                         "total_duration_ms": total_duration,
                         "embedding_duration_ms": embedding_duration,
                         "search_duration_ms": search_duration,
-                        "sources": request.sources,
+                        "sources": request.sources or "all",
                         "entity_filter": request.entity_filter,
                     }
                 },
@@ -309,7 +377,7 @@ class SearchClient:
                 search_duration_ms=total_duration,
                 embedding_duration_ms=embedding_duration,
                 model_used=model_name,
-                source_searched=",".join(request.sources),
+                source_searched=",".join(request.sources) if request.sources else "all",
             )
 
         except Exception as e:
@@ -324,7 +392,7 @@ class SearchClient:
         self,
         *,
         conn: asyncpg.Connection,
-        source: str,
+        source: str | None,
         query_concepts: list[str],
         top_k: int,
         max_chunks_per_document: int | None,
@@ -337,10 +405,10 @@ class SearchClient:
         """
         concept_tsqueries = [_term_to_tsquery(c) for c in query_concepts]
 
+        source_clause = "AND source = $2 " if source is not None else ""
         intersect_parts = [
             f"SELECT document_id FROM document_embeddings "
-            f"WHERE source = $2 "
-            f"AND tsv @@ to_tsquery('english', '{tsq}')"
+            f"WHERE {source_clause}tsv @@ to_tsquery('english', '{tsq}')"
             for tsq in concept_tsqueries
         ]
         qualifying_docs_sql = " INTERSECT ".join(intersect_parts)
@@ -361,8 +429,18 @@ class SearchClient:
 
         logger.info(
             "Executing match_all keyword search (INTERSECT approach)",
-            extra={"source": source, "concepts": query_concepts, "top_k": top_k},
+            extra={"source": source or "all", "concepts": query_concepts, "top_k": top_k},
         )
+
+        # When source is provided it occupies $2, so top_k and max_chunks shift up by one.
+        if source is not None:
+            top_k_param = "$3"
+            max_chunks_param = "$4"
+            chunk_terms_source_filter = "AND de.source = $2"
+        else:
+            top_k_param = "$2"
+            max_chunks_param = "$3"
+            chunk_terms_source_filter = ""
 
         if max_chunks_per_document is not None:
             tail_sql = f""",
@@ -375,16 +453,16 @@ class SearchClient:
                 SELECT chunk_id, text, source_code, document_id, name, url, metadata,
                        source, last_modified_date, score, term_count, base_score
                 FROM ranked_chunks
-                WHERE doc_rank <= $4
+                WHERE doc_rank <= {max_chunks_param}
                 ORDER BY score DESC
-                LIMIT $3;"""
+                LIMIT {top_k_param};"""
         else:
-            tail_sql = """
+            tail_sql = f"""
                 SELECT chunk_id, text, source_code, document_id, name, url, metadata,
                        source, last_modified_date, score, term_count, base_score
                 FROM scored_chunks
                 ORDER BY score DESC
-                LIMIT $3;"""
+                LIMIT {top_k_param};"""
 
         sql = f"""
             WITH qualifying_docs AS (
@@ -401,8 +479,8 @@ class SearchClient:
                 FROM document_embeddings de
                 LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
                 JOIN qualifying_docs qd ON de.document_id = qd.document_id
-                WHERE de.source = $2
-                  AND de.tsv @@ to_tsquery('english', $1)
+                WHERE de.tsv @@ to_tsquery('english', $1)
+                  {chunk_terms_source_filter}
             ),
             scored_chunks AS (
                 SELECT
@@ -413,9 +491,14 @@ class SearchClient:
                 FROM chunk_terms
             ){tail_sql}"""
 
-        if max_chunks_per_document is not None:
-            return list(await conn.fetch(sql, tsquery_or, source, top_k, max_chunks_per_document))
-        return list(await conn.fetch(sql, tsquery_or, source, top_k))
+        if source is not None:
+            if max_chunks_per_document is not None:
+                return list(await conn.fetch(sql, tsquery_or, source, top_k, max_chunks_per_document))
+            return list(await conn.fetch(sql, tsquery_or, source, top_k))
+        else:
+            if max_chunks_per_document is not None:
+                return list(await conn.fetch(sql, tsquery_or, top_k, max_chunks_per_document))
+            return list(await conn.fetch(sql, tsquery_or, top_k))
 
     async def search_keyword(self, request: SearchRequest) -> SearchResponse:
         """Perform keyword search using PostgreSQL full-text search (BM25-style)."""
@@ -428,11 +511,86 @@ class SearchClient:
             async with pool.acquire() as conn:
                 search_start = time.time()
 
-                for source in request.sources:
+                sources_to_search = request.sources or []
+
+                if sources_to_search:
+                    for source in sources_to_search:
+                        if request.match_all:
+                            rows = await self._keyword_search_match_all(
+                                conn=conn,
+                                source=source,
+                                query_concepts=request.query.split(),
+                                top_k=request.top_k,
+                                max_chunks_per_document=request.max_chunks_per_document,
+                            )
+                            all_rows.extend([dict(r) for r in rows])
+                        else:
+                            tsquery_str = " | ".join(request.query.split())
+                            logger.info(
+                                "Executing keyword search (OR logic)",
+                                extra={"source": source, "tsquery": tsquery_str},
+                            )
+
+                            if request.max_chunks_per_document is not None:
+                                sql = """
+                                    WITH scored_chunks AS (
+                                        SELECT
+                                            de.chunk_id, de.text, de.source_code, de.document_id,
+                                            dm.name, dm.url,
+                                            (de.metadata)::jsonb AS metadata,
+                                            de.source, dm.last_modified_date,
+                                            ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
+                                        FROM document_embeddings de
+                                        LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                        WHERE de.source = $2
+                                          AND de.tsv IS NOT NULL
+                                          AND de.tsv @@ to_tsquery('english', $1)
+                                    ),
+                                    ranked_chunks AS (
+                                        SELECT *,
+                                            ROW_NUMBER() OVER (
+                                                PARTITION BY document_id ORDER BY score DESC
+                                            ) AS doc_rank
+                                        FROM scored_chunks
+                                    )
+                                    SELECT chunk_id, text, source_code, document_id, name, url,
+                                           metadata, source, last_modified_date, score
+                                    FROM ranked_chunks
+                                    WHERE doc_rank <= $4
+                                    ORDER BY score DESC
+                                    LIMIT $3;
+                                """
+                                rows = await conn.fetch(
+                                    sql, tsquery_str, source,
+                                    request.top_k, request.max_chunks_per_document,
+                                )
+                            else:
+                                sql = """
+                                    SELECT
+                                        de.chunk_id, de.text, de.source_code, de.document_id,
+                                        dm.name, dm.url,
+                                        (de.metadata)::jsonb AS metadata,
+                                        de.source, dm.last_modified_date,
+                                        ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
+                                    FROM document_embeddings de
+                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                    WHERE de.source = $2
+                                      AND de.tsv IS NOT NULL
+                                      AND de.tsv @@ to_tsquery('english', $1)
+                                    ORDER BY score DESC
+                                    LIMIT $3;
+                                """
+                                rows = await conn.fetch(sql, tsquery_str, source, request.top_k)
+
+                            all_rows.extend([dict(r) for r in rows])
+
+                        logger.debug(f"Source '{source}' returned {len(rows)} results")
+                else:
+                    # Full corpus keyword search — no source filter
                     if request.match_all:
                         rows = await self._keyword_search_match_all(
                             conn=conn,
-                            source=source,
+                            source=None,
                             query_concepts=request.query.split(),
                             top_k=request.top_k,
                             max_chunks_per_document=request.max_chunks_per_document,
@@ -440,10 +598,7 @@ class SearchClient:
                         all_rows.extend([dict(r) for r in rows])
                     else:
                         tsquery_str = " | ".join(request.query.split())
-                        logger.info(
-                            "Executing keyword search (OR logic)",
-                            extra={"source": source, "tsquery": tsquery_str},
-                        )
+                        logger.info("Executing keyword search (OR logic, all sources)", extra={"tsquery": tsquery_str})
 
                         if request.max_chunks_per_document is not None:
                             sql = """
@@ -456,8 +611,7 @@ class SearchClient:
                                         ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
                                     FROM document_embeddings de
                                     LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
-                                    WHERE de.source = $2
-                                      AND de.tsv IS NOT NULL
+                                    WHERE de.tsv IS NOT NULL
                                       AND de.tsv @@ to_tsquery('english', $1)
                                 ),
                                 ranked_chunks AS (
@@ -470,14 +624,11 @@ class SearchClient:
                                 SELECT chunk_id, text, source_code, document_id, name, url,
                                        metadata, source, last_modified_date, score
                                 FROM ranked_chunks
-                                WHERE doc_rank <= $4
+                                WHERE doc_rank <= $3
                                 ORDER BY score DESC
-                                LIMIT $3;
+                                LIMIT $2;
                             """
-                            rows = await conn.fetch(
-                                sql, tsquery_str, source,
-                                request.top_k, request.max_chunks_per_document,
-                            )
+                            rows = await conn.fetch(sql, tsquery_str, request.top_k, request.max_chunks_per_document)
                         else:
                             sql = """
                                 SELECT
@@ -488,17 +639,15 @@ class SearchClient:
                                     ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
                                 FROM document_embeddings de
                                 LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
-                                WHERE de.source = $2
-                                  AND de.tsv IS NOT NULL
+                                WHERE de.tsv IS NOT NULL
                                   AND de.tsv @@ to_tsquery('english', $1)
                                 ORDER BY score DESC
-                                LIMIT $3;
+                                LIMIT $2;
                             """
-                            rows = await conn.fetch(sql, tsquery_str, source, request.top_k)
+                            rows = await conn.fetch(sql, tsquery_str, request.top_k)
 
                         all_rows.extend([dict(r) for r in rows])
-
-                    logger.debug(f"Source '{source}' returned {len(rows)} results")
+                    logger.debug(f"Full corpus keyword search returned {len(all_rows)} results")
 
                 search_duration = (time.time() - search_start) * 1000
 
@@ -548,7 +697,7 @@ class SearchClient:
                         "unique_documents": len(set(c.document_id for c in chunks)),
                         "total_duration_ms": total_duration,
                         "search_duration_ms": search_duration,
-                        "sources": request.sources,
+                        "sources": request.sources or "all",
                         "match_all": request.match_all,
                     }
                 },
@@ -560,7 +709,7 @@ class SearchClient:
                 search_duration_ms=total_duration,
                 embedding_duration_ms=0.0,
                 model_used="postgresql-fts",
-                source_searched=",".join(request.sources),
+                source_searched=",".join(request.sources) if request.sources else "all",
             )
 
         except Exception as e:

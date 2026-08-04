@@ -12,7 +12,7 @@ export async function sendQuery(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       query,
-      source: opts.source ?? 'sample-service',
+      ...(opts.source ? { source: opts.source } : {}),
       top_k: opts.topK ?? 5,
       mode: opts.mode ?? 'hybrid',
       conversation_id: opts.conversationId,

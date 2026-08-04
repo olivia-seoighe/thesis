@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 class QueryRequest(BaseModel):
     query: str
-    source: str = "sample-service"
+    source: Optional[str] = None
     top_k: int = 5
     mode: str = "hybrid"              # retrieval mode: hybrid | vector | keyword
     model: Optional[str] = None       # overrides OPENAI_MODEL

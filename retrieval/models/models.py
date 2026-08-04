@@ -7,8 +7,8 @@ class SearchRequest(BaseModel):
     query: str = Field(..., description="The search query text")
     top_k: int = Field(5, description="Number of top results to return")
     sources: List[str] = Field(
-        ...,
-        description="Source filters to search within specific document sources (required)",
+        default_factory=list,
+        description="Source filters. Empty list = search all sources.",
     )
     match_all: bool = Field(
         False,
@@ -24,12 +24,6 @@ class SearchRequest(BaseModel):
         description="Optional entity filter for vector search. Matches document title and content.",
     )
 
-    @field_validator("sources")
-    @classmethod
-    def validate_sources(cls, v: List[str]) -> List[str]:
-        if not v:
-            raise ValueError("At least one source must be specified")
-        return v
 
 
 class RetrievedChunk(BaseModel):

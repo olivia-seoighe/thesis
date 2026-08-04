@@ -32,9 +32,9 @@ async def search_vector(
     request: Request,
     query: str = Query(..., description="The query to search for"),
     top_k: int = Query(10, description="Number of results to return"),
-    source: str = Query(
-        ...,
-        description="Source filter(s). Single source or comma-separated list.",
+    source: str | None = Query(
+        None,
+        description="Source filter(s). Single source or comma-separated list. Omit to search all sources.",
     ),
     entity_filter: str | None = Query(
         None,
@@ -54,7 +54,7 @@ async def search_vector(
         },
     )
     try:
-        sources = [s.strip() for s in source.split(",")] if "," in source else [source]
+        sources = [s.strip() for s in source.split(",")] if source else []
         search_request = SearchRequest(
             query=query, top_k=top_k, sources=sources, entity_filter=entity_filter
         )
@@ -78,9 +78,9 @@ async def search_keyword(
     request: Request,
     query: str = Query(..., description="The query to search for"),
     top_k: int = Query(10, description="Number of results to return"),
-    source: str = Query(
-        ...,
-        description="Source filter(s). Single source or comma-separated list.",
+    source: str | None = Query(
+        None,
+        description="Source filter(s). Single source or comma-separated list. Omit to search all sources.",
     ),
     match_all: bool = Query(
         False,
@@ -105,7 +105,7 @@ async def search_keyword(
         },
     )
     try:
-        sources = [s.strip() for s in source.split(",")] if "," in source else [source]
+        sources = [s.strip() for s in source.split(",")] if source else []
         search_request = SearchRequest(
             query=query,
             top_k=top_k,
@@ -133,9 +133,9 @@ async def search_hybrid(
     request: Request,
     query: str = Query(..., description="The query to search for"),
     top_k: int = Query(10, description="Number of results to return"),
-    source: str = Query(
-        ...,
-        description="Source filter(s). Single source or comma-separated list.",
+    source: str | None = Query(
+        None,
+        description="Source filter(s). Single source or comma-separated list. Omit to search all sources.",
     ),
 ):
     logger.info(
@@ -143,7 +143,7 @@ async def search_hybrid(
         extra={"search": {"query": query, "top_k": top_k, "source": source}},
     )
     try:
-        sources = [s.strip() for s in source.split(",")] if "," in source else [source]
+        sources = [s.strip() for s in source.split(",")] if source else []
         search_request = SearchRequest(query=query, top_k=top_k, sources=sources)
         results = await hybrid_search_endpoint.run(search_request)
         logger.info(

@@ -46,7 +46,6 @@ from models import (
 )
 
 RETRIEVAL_URL = os.getenv("RETRIEVAL_URL", "http://retrieval:8000")
-DEFAULT_SOURCE = os.getenv("DEFAULT_SOURCE", "sample-service")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://raguser:ragpassword@postgres:5432/ragdb")
 
 # RRF formula: score = 1/(60 + rank), where 60 is the standard dampening constant
@@ -149,11 +148,14 @@ async def _db_delete_conversation(conv_id: str) -> bool:
 RETRIEVAL_MODES = ("hybrid", "vector", "keyword")
 
 
-async def _retrieve(client: httpx.AsyncClient, query: str, source: str, top_k: int, mode: str) -> list:
+async def _retrieve(client: httpx.AsyncClient, query: str, source: str | None, top_k: int, mode: str) -> list:
     mode = mode if mode in RETRIEVAL_MODES else "hybrid"
+    params: dict = {"query": query, "top_k": top_k}
+    if source:
+        params["source"] = source
     resp = await client.get(
         f"{RETRIEVAL_URL}/search/{mode}",
-        params={"query": query, "source": source, "top_k": top_k},
+        params=params,
         timeout=30,
     )
     resp.raise_for_status()
@@ -170,7 +172,7 @@ async def health() -> dict:
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest) -> QueryResponse:
     t_start = time.time()
-    source = req.source or DEFAULT_SOURCE
+    source = req.source
     conv_id = req.conversation_id or str(uuid.uuid4())
 
     # Retrieval — vector, keyword, or hybrid (RRF) depending on req.mode
