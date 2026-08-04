@@ -125,6 +125,11 @@ def _get_summary_files() -> list[Path]:
     summaries_dir = os.getenv("SUMMARIES_DIR")
     if summaries_dir:
         paths = sorted(Path(summaries_dir).glob("*/summaries.json"))
+        services = os.getenv("SUMMARY_SERVICES")
+        if services:
+            wanted = {s.strip() for s in services.split(",") if s.strip()}
+            paths = [p for p in paths if p.parent.name in wanted]
+            logger.info(f"Filtering ingest to services: {sorted(wanted)}")
         if not paths:
             logger.warning(f"No */summaries.json found under {summaries_dir}")
         return paths
@@ -138,7 +143,10 @@ async def main() -> None:
     db = ConnectionManager()
     embedder = EmbeddingClient()
     indexer = PostgresIndexer(db)
-    chunker = DocumentChunker()
+    chunk_size = int(os.getenv("CHUNK_SIZE", "1500"))
+    overlap_ratio = float(os.getenv("CHUNK_OVERLAP", "0.15"))
+    chunker = DocumentChunker(chunk_size=chunk_size, overlap_ratio=overlap_ratio)
+    logger.info(f"Chunker: chunk_size={chunk_size} words, overlap_ratio={overlap_ratio}")
 
     try:
         for summaries_file in summary_files:

@@ -11,6 +11,8 @@ class EmbeddingAPIClient:
         api_key = os.environ["OPENAI_API_KEY"]
         base_url = os.getenv("OPENAI_BASE_URL")  # Optional: enterprise gateway
         self.default_model = os.environ["OPENAI_EMBEDDING_MODEL"]
+        dim = os.getenv("EMBEDDING_DIM")
+        self.dimensions = int(dim) if dim else None
 
         kwargs: dict = {"api_key": api_key}
         if base_url:
@@ -18,9 +20,15 @@ class EmbeddingAPIClient:
 
         self._client = AsyncOpenAI(**kwargs)
 
+    def _create_kwargs(self, model_name: Optional[str]) -> dict:
+        kwargs: dict = {"model": model_name or self.default_model}
+        if self.dimensions:
+            kwargs["dimensions"] = self.dimensions
+        return kwargs
+
     async def embed_single(self, text: str, model_name: Optional[str] = None) -> List[float]:
         response = await self._client.embeddings.create(
-            input=text, model=model_name or self.default_model
+            input=text, **self._create_kwargs(model_name)
         )
         return response.data[0].embedding
 
@@ -30,7 +38,7 @@ class EmbeddingAPIClient:
         if not texts:
             return []
         response = await self._client.embeddings.create(
-            input=texts, model=model_name or self.default_model
+            input=texts, **self._create_kwargs(model_name)
         )
         items = sorted(response.data, key=lambda x: x.index)
         return [item.embedding for item in items]

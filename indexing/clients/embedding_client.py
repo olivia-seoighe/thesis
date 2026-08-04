@@ -13,6 +13,8 @@ class EmbeddingClient:
         api_key = os.environ["OPENAI_API_KEY"]
         base_url = os.getenv("OPENAI_BASE_URL")
         self.model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
+        dim = os.getenv("EMBEDDING_DIM")
+        self.dimensions = int(dim) if dim else None
 
         kwargs: dict = {"api_key": api_key}
         if base_url:
@@ -22,7 +24,10 @@ class EmbeddingClient:
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
-        response = await self._client.embeddings.create(input=texts, model=self.model)
+        create_kwargs: dict = {"input": texts, "model": self.model}
+        if self.dimensions:
+            create_kwargs["dimensions"] = self.dimensions
+        response = await self._client.embeddings.create(**create_kwargs)
         return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
 
     async def embed_chunks(self, chunks: List[DocumentChunk]) -> List[EmbeddedDocumentChunk]:

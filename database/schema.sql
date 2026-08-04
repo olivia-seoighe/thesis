@@ -26,8 +26,15 @@ CREATE TABLE IF NOT EXISTS document_metadata (
     source             TEXT,
     last_modified_date TIMESTAMPTZ,
     last_indexed_at    TIMESTAMPTZ DEFAULT NOW(),
-    source_refs        TEXT        -- '## Source References' block stripped from summary before embedding
+    source_refs        TEXT        
 );
+
+
+\getenv embedding_dim EMBEDDING_DIM
+\if :{?embedding_dim}
+\else
+  \set embedding_dim 3072
+\endif
 
 CREATE TABLE IF NOT EXISTS document_embeddings (
     chunk_id       TEXT PRIMARY KEY,
@@ -35,7 +42,7 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
     source_code    TEXT,
     document_id    TEXT,
     document_title TEXT,
-    embedding_3072      halfvec(3072),
+    embedding_3072      halfvec(:embedding_dim),
     tsv            tsvector,
     metadata       JSONB,
     source         TEXT
