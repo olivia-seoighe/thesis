@@ -7,12 +7,12 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api/generation': {
-        target: process.env.VITE_GENERATION_URL || 'http://localhost:8002',
+        target: process.env.VITE_GENERATION_URL || 'http://localhost:18002',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/generation/, ''),
       },
       '/api/retrieval': {
-        target: process.env.VITE_RETRIEVAL_URL || 'http://localhost:8000',
+        target: process.env.VITE_RETRIEVAL_URL || 'http://localhost:18000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/retrieval/, ''),
       },

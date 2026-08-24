@@ -56,7 +56,7 @@ GITHUB_TOKEN=...
 ```bash
 docker compose up -d postgres pgadmin
 docker compose ps postgres pgadmin
-docker logs --tail 100 poc-postgres
+docker compose logs --tail 100 postgres
 ```
 
 
@@ -64,19 +64,19 @@ docker logs --tail 100 poc-postgres
 
 ```bash
 docker compose up -d --build --force-recreate code-summarisation-agent
-until curl -fsS http://localhost:8001/health >/dev/null; do sleep 1; done
+until curl -fsS http://localhost:18001/health >/dev/null; do sleep 1; done
 ```
 
 ## Step 3: Run Full Summarisation
 
 ```bash
 # First run or retry failures (skips already-summarised files)
-curl -sS -X POST "http://localhost:8001/summarize/batch"
+curl -sS -X POST "http://localhost:18001/summarize/batch"
 
 # Force full re-summarisation
-curl -sS -X POST "http://localhost:8001/summarize/batch?force=true"
+curl -sS -X POST "http://localhost:18001/summarize/batch?force=true"
 
-docker logs -f poc-summariser
+docker compose logs -f code-summarisation-agent
 
 ls -lah summaries          # one folder per repo
 find summaries -name summaries.json | head
@@ -94,13 +94,13 @@ docker compose --profile ingest down
 
 ```bash
 docker compose up -d retrieval generation ui
-curl -fsS http://localhost:8000/live
-curl -fsS http://localhost:8002/health
+curl -fsS http://localhost:18000/live
+curl -fsS http://localhost:18002/health
 ```
 
 UI URL:
 
-1. `http://localhost:3000`
+1. `http://localhost:13000`
 
 ## DB reset
 

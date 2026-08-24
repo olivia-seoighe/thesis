@@ -6,4 +6,7 @@ config.yaml
 .DS_Store
 .venv/
 __pycache__/
-evaluation/golden_queries.json
+golden_queries.json
+golden_queries.csv
+datasets/
+results/
