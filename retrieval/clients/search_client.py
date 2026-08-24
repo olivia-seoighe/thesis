@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from typing import Any, List, Optional
 
@@ -28,6 +29,12 @@ def _term_to_tsquery(term: str) -> str:
     if len(words) > 1:
         return " <-> ".join(words)
     return safe_term
+
+
+ # Preserve hyphenated identifiers (e.g.,service names like uacr-service)
+_TSQUERY_TOKEN = re.compile(r"\w+(?:-\w+)*")
+def _sanitize_terms(query: str) -> list[str]:
+    return _TSQUERY_TOKEN.findall(query)
 
 
 class SearchClient:
@@ -503,6 +510,7 @@ class SearchClient:
     async def search_keyword(self, request: SearchRequest) -> SearchResponse:
         """Perform keyword search using PostgreSQL full-text search (BM25-style)."""
         start_time = time.time()
+        terms = _sanitize_terms(request.query)
 
         try:
             pool = await self.get_pool()
@@ -519,13 +527,13 @@ class SearchClient:
                             rows = await self._keyword_search_match_all(
                                 conn=conn,
                                 source=source,
-                                query_concepts=request.query.split(),
+                                query_concepts=terms,
                                 top_k=request.top_k,
                                 max_chunks_per_document=request.max_chunks_per_document,
                             )
                             all_rows.extend([dict(r) for r in rows])
                         else:
-                            tsquery_str = " | ".join(request.query.split())
+                            tsquery_str = " | ".join(terms)
                             logger.info(
                                 "Executing keyword search (OR logic)",
                                 extra={"source": source, "tsquery": tsquery_str},
@@ -591,13 +599,13 @@ class SearchClient:
                         rows = await self._keyword_search_match_all(
                             conn=conn,
                             source=None,
-                            query_concepts=request.query.split(),
+                            query_concepts=terms,
                             top_k=request.top_k,
                             max_chunks_per_document=request.max_chunks_per_document,
                         )
                         all_rows.extend([dict(r) for r in rows])
                     else:
-                        tsquery_str = " | ".join(request.query.split())
+                        tsquery_str = " | ".join(terms)
                         logger.info("Executing keyword search (OR logic, all sources)", extra={"tsquery": tsquery_str})
 
                         if request.max_chunks_per_document is not None:
