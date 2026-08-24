@@ -32,7 +32,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -97,6 +96,14 @@ def split_summary(summary: str) -> tuple[str, str]:
         flags=re.DOTALL | re.MULTILINE,
     ).strip()
 
+    # Strip inline line-range citations
+    # These stay in the summary body for provenance but shouldn't leak into generated answers
+    embeddable_text = re.sub(
+        r"\s?\((?:[\w./-]+:)?L\d+(?:[-–—]L?\d+)?\)",
+        "",
+        embeddable_text,
+    )
+
     return embeddable_text, source_refs
 
 
@@ -111,7 +118,7 @@ def build_document(file_entry: dict, source: str) -> Document:
         source=source,
         url=file_entry.get("url", ""),
         source_code=file_entry.get("source_code", ""),
-        last_modified_date=file_entry.get("last_modified"),
+        last_modified_date=file_entry.get("last_modified") or None,
         source_refs=source_refs,
     )
 
