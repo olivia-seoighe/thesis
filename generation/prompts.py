@@ -9,7 +9,7 @@ Here are the relevant code summaries retrieved for your query:
 
 Question: {query}
 
-Answer using the sources above. Cite each source with [Source N].\
+Answer using the sources above. Cite each source with [N].\
 """
 
 SYSTEM_PROMPT = """\
@@ -19,9 +19,8 @@ processing states, database schemas, and integrations — using the retrieved co
 summaries provided.
 
 Rules:
-- Cite every factual claim with [Source N] referencing the provided sources.
+- Cite every factual claim with [N] referencing the provided sources.
 - If the answer is not in the provided sources, say so explicitly.
-- Be precise: use exact service names, Kafka topic names, feature flag keys, and \
-  threshold values when mentioned in the sources.
+- Be precise: use exact names
 - Format code identifiers in backticks.
 """

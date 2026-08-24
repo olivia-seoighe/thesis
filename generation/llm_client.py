@@ -13,7 +13,7 @@ def _build_context_block(citations: list[dict]) -> str:
     parts = []
     for i, chunk in enumerate(citations, 1):
         parts.append(
-            f"[Source {i}]: {chunk['document_title']} ({chunk['url']})\n"
+            f"[{i}]: {chunk['document_title']} ({chunk['url']})\n"
             f"Relevance: {chunk['score']:.3f}\n\n"
             f"{chunk['text']}"
         )

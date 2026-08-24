@@ -48,14 +48,6 @@ from models import (
 RETRIEVAL_URL = os.getenv("RETRIEVAL_URL", "http://retrieval:8000")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://raguser:ragpassword@postgres:5432/ragdb")
 
-# RRF formula: score = 1/(60 + rank), where 60 is the standard dampening constant
-# from Cormack et al. (2009) and rank starts at 1.
-# Single-list max (rank 1 in one search only): 1/61 ≈ 0.016.
-# Both-lists min (rank 5 in both searches): 2/65 ≈ 0.031.
-# 0.025 sits in the gap — a chunk must appear in both vector AND keyword
-# results to pass. If no chunk passes, the LLM answers without citing sources.
-MIN_TOP_CITATION_SCORE = float(os.getenv("MIN_TOP_CITATION_SCORE", "0.025"))
-
 app = FastAPI(title="Code RAG Generation Service")
 app.add_middleware(
     CORSMiddleware,
@@ -187,15 +179,8 @@ async def query(req: QueryRequest) -> QueryResponse:
     retrieval_ms = (time.time() - t_ret_start) * 1000
     merged_chunks = [chunk for response in retrieval_results for chunk in response.get("chunks", [])]
 
-    top_score = merged_chunks[0]["score"] if merged_chunks else 0.0
     if not merged_chunks:
         log.warning(f"No results retrieved for query: {req.query!r}")
-    elif top_score < MIN_TOP_CITATION_SCORE:
-        log.info(
-            f"Top chunk score {top_score:.4f} below threshold {MIN_TOP_CITATION_SCORE} — "
-            f"skipping citations for query: {req.query!r}"
-        )
-        merged_chunks = []
 
     # Build conversation history for multi-turn context
     history: list[dict] = []
