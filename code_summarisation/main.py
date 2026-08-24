@@ -134,6 +134,20 @@ def _load_existing_summaries(repo_name: str) -> dict[str, dict]:
         return {}
 
 
+def _upsert_summary_entry(repo_name: str, entry: dict) -> None:
+    """Insert or replace a single file entry in a repo's summaries.json by file_path."""
+    summaries_path = TEMP_DIR / repo_name / "summaries.json"
+    if summaries_path.exists():
+        data = json.loads(summaries_path.read_text())
+    else:
+        data = {"repository": repo_name, "files": []}
+    files = [f for f in data.get("files", []) if f.get("file_path") != entry["file_path"]]
+    files.append(entry)
+    data["files"] = files
+    summaries_path.parent.mkdir(parents=True, exist_ok=True)
+    summaries_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+
+
 async def _summarise_repo(
     *,
     fetcher: GitHubFetcher,
@@ -288,6 +302,108 @@ async def summarize_batch(force: bool = False) -> dict:
     return {
         "repos": len(repos),
         "summarised": sum(r.get("summarised", 0) for r in results),
+        "results": results,
+    }
+
+
+async def _generate_index_for_repo(
+    *,
+    repo: str,
+    tenant_context: str,
+    force: bool = False,
+) -> dict:
+    """Roll a repo's existing per-file summaries up into one {repo}_index.md."""
+    repo_name = repo.split("/")[-1]
+    index_name = f"{repo_name}_index.md"
+
+    existing = _load_existing_summaries(repo_name)
+    if not existing:
+        log.warning("No summaries.json found, skipping index. repo=%s", repo_name)
+        return {"repo": repo, "indexed": False, "reason": "no summaries.json"}
+
+    if not force and index_name in existing:
+        log.info("Index already present, skipping. repo=%s", repo_name)
+        return {"repo": repo, "indexed": False, "reason": "already exists"}
+
+    summaries = {
+        fp: entry["summary"]
+        for fp, entry in existing.items()
+        if fp != index_name and entry.get("summary")
+    }
+    if not summaries:
+        log.warning("No file summaries to roll up. repo=%s", repo_name)
+        return {"repo": repo, "indexed": False, "reason": "no file summaries"}
+
+    index_md, _, _, out_tok = await _summariser.generate_repo_summary(
+        repo=repo_name,
+        summaries=summaries,
+        tenant_context=tenant_context,
+    )
+    if not index_md.strip():
+        raise ValueError("empty index generated")
+
+    out_path = _write_markdown(repo_name, index_name, "", index_md)
+    _upsert_summary_entry(
+        repo_name,
+        {
+            "file_path": index_name,
+            "url": "",
+            "source_code": "",
+            "summary": index_md,
+            "last_modified": None,
+        },
+    )
+    log.info(
+        "Wrote repo index. repo=%s path=%s files=%d tokens_out=%d",
+        repo_name,
+        out_path,
+        len(summaries),
+        out_tok,
+    )
+    return {"repo": repo, "indexed": True, "files": len(summaries), "output": str(out_path)}
+
+
+@app.post("/summarize/index")
+async def summarize_index(repo: str | None = None, force: bool = False) -> dict:
+    """Roll each repo's per-file summaries up into one {repo}_index.md architectural overview.
+
+    Reads existing per-repo summaries.json (run /summarize/batch first), synthesises a
+    repo-level index, writes it as {repo}_index.md, and appends it to summaries.json so the
+    indexing service embeds it.
+    force=false (default): skip repos whose index already exists.
+    force=true: regenerate.
+    Pass repo=<name> to target a single configured repo; omit to process all.
+    """
+    cfg = _load_config()
+    repos = [r for r in cfg.get("repos", []) if r]
+    if not repos:
+        raise HTTPException(
+            status_code=500,
+            detail="No repositories configured. Set repos in config.yaml.",
+        )
+    if repo:
+        repos = [r for r in repos if r.split("/")[-1] == repo.split("/")[-1]]
+        if not repos:
+            raise HTTPException(status_code=404, detail=f"Repo not configured: {repo}")
+
+    tenant_context = _tenant_context(cfg)
+
+    log.info("Starting index. repos=%d force=%s", len(repos), force)
+    results: list[dict] = []
+    for r in repos:
+        try:
+            results.append(
+                await _generate_index_for_repo(
+                    repo=r, tenant_context=tenant_context, force=force
+                )
+            )
+        except Exception as exc:
+            log.error("Index failed. repo=%s error=%s", r, exc, exc_info=True)
+            results.append({"repo": r, "indexed": False, "error": str(exc)})
+
+    return {
+        "repos": len(repos),
+        "indexed": sum(1 for r in results if r.get("indexed")),
         "results": results,
     }
 
