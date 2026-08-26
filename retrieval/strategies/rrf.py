@@ -5,9 +5,21 @@ where K=60
 
 """
 
-from models.models import RetrievedChunk, SearchResponse
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from models.models import RetrievedChunk, SearchResponse
 
 RRF_K = 60
+
+
+def reciprocal_rank(rank: int, k: int = RRF_K) -> float:
+    """Return reciprocal-rank contribution for a 1-based rank."""
+    if rank <= 0:
+        raise ValueError("rank must be >= 1")
+    return 1.0 / (k + rank)
 
 
 def rrf_merge(responses: list[SearchResponse], top_k: int) -> list[RetrievedChunk]:
@@ -27,7 +39,7 @@ def rrf_merge(responses: list[SearchResponse], top_k: int) -> list[RetrievedChun
 
     for response in responses:
         for rank, chunk in enumerate(response.chunks):
-            scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+            scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + reciprocal_rank(rank + 1)
             chunks_by_id[chunk.chunk_id] = chunk
 
     # Keep only the highest-scoring chunk per document title to prevent one
