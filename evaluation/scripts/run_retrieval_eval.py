@@ -15,6 +15,7 @@ from evaluation.harness.config import (
     DEFAULT_K_VALUES,
     DEFAULT_RESULTS_DIR,
     DEFAULT_RETRIEVAL_URL,
+    DEFAULT_SERVICE_CATALOGUE_PATH,
     DEFAULT_STRATEGIES,
     DEFAULT_TIMEOUT_SECONDS,
 )
@@ -50,6 +51,9 @@ def parse_strategies(raw_value: str) -> tuple[str, ...]:
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments for retrieval baseline runs."""
 
+    default_service_catalogue = (
+        DEFAULT_SERVICE_CATALOGUE_PATH if DEFAULT_SERVICE_CATALOGUE_PATH.exists() else None
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset-dir",
@@ -73,7 +77,10 @@ def parse_args() -> argparse.Namespace:
         "--strategies",
         type=str,
         default=",".join(DEFAULT_STRATEGIES),
-        help="Comma-separated strategies: keyword,vector,hybrid.",
+        help=(
+            "Comma-separated strategies. Base: keyword,vector,hybrid,graph. "
+            "Service-aware variant: append -service-aware (e.g. vector-service-aware)."
+        ),
     )
     parser.add_argument(
         "--k-values",
@@ -94,11 +101,14 @@ def parse_args() -> argparse.Namespace:
         help="Optional query limit for smoke runs.",
     )
     parser.add_argument(
-        "--use-source-filters",
-        dest="use_source_filters",
-        action="store_true",
-        default=False,
-        help="Pass query gold services as source filters to retrieval endpoints.",
+        "--service-catalogue",
+        type=Path,
+        default=default_service_catalogue,
+        help=(
+            "Optional JSON file with service catalogue (source + short/long forms). "
+            "Defaults to service_acronyms.json at repo root when present; "
+            "otherwise evaluator uses retrieval /sources as the catalogue."
+        ),
     )
     return parser.parse_args()
 
@@ -116,7 +126,7 @@ def main() -> None:
         strategies=strategies,
         k_values=k_values,
         timeout_seconds=args.timeout_seconds,
-        use_source_filters=args.use_source_filters,
+        service_catalogue_path=args.service_catalogue,
     )
 
     result = evaluator.run(
