@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from math import log2
+
 
 class MetricsCalculator:
-    """Computes recall, precision, and F1 at K."""
+    """Computes retrieval metrics at K."""
 
     @staticmethod
     def unique_doc_ids_in_order(doc_ids: list[str]) -> list[str]:
@@ -40,3 +42,28 @@ class MetricsCalculator:
     def hit_count_at_k(retrieved_doc_ids: list[str], relevant_doc_ids: set[str], k: int) -> int:
         top_k = set(retrieved_doc_ids[:k])
         return len(top_k & relevant_doc_ids)
+
+    @staticmethod
+    def mrr_at_k(retrieved_doc_ids: list[str], relevant_doc_ids: set[str], k: int) -> float:
+        if k <= 0 or not relevant_doc_ids:
+            return 0.0
+        for rank, doc_id in enumerate(retrieved_doc_ids[:k], start=1):
+            if doc_id in relevant_doc_ids:
+                return 1.0 / rank
+        return 0.0
+
+    @staticmethod
+    def ndcg_at_k(retrieved_doc_ids: list[str], relevant_doc_ids: set[str], k: int) -> float:
+        if k <= 0 or not relevant_doc_ids:
+            return 0.0
+        dcg = 0.0
+        for rank, doc_id in enumerate(retrieved_doc_ids[:k], start=1):
+            if doc_id in relevant_doc_ids:
+                dcg += 1.0 / log2(rank + 1)
+        ideal_hits = min(len(relevant_doc_ids), k)
+        if ideal_hits == 0:
+            return 0.0
+        idcg = sum(1.0 / log2(rank + 1) for rank in range(1, ideal_hits + 1))
+        if idcg <= 0.0:
+            return 0.0
+        return dcg / idcg
