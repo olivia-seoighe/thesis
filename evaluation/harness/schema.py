@@ -67,6 +67,53 @@ class RetrievalErrorRow:
 
 
 @dataclass(frozen=True)
+class RetrievalDecisionRow:
+    """Per-query metadata-routing decision for service-aware retrieval."""
+
+    run_id: str
+    query_id: str
+    category: str
+    difficulty: int
+    strategy: str
+    query: str
+    detected_services: tuple[str, ...]
+    metadata_mode: str
+    filter_services: tuple[str, ...]
+    boost_services: tuple[str, ...]
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EvaluationResultRow:
+    """One strategy result row with retrieval metrics and routing metadata."""
+
+    run_id: str
+    query_id: str
+    query_text: str
+    category: str
+    difficulty: int
+    strategy: str
+    k: int
+    metadata_mode: str
+    detected_services: str
+    recall: float
+    precision: float
+    f1: float
+    mrr: float
+    ndcg: float
+    relevant_count: int
+    retrieved_count: int
+    hit_count: int
+    error: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class MetricRow:
     """A single metric value computed per query and strategy."""
 
