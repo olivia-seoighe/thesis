@@ -1,4 +1,4 @@
-"""HTTP strategy runner for keyword, vector, and hybrid retrieval endpoints."""
+"""HTTP strategy runner for retrieval endpoints."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ class StrategyResponseChunk:
     chunk_id: str
     document_id: str
     score: float
+    source: str
+    metadata: dict[str, Any]
 
 
 class StrategyRunner:
@@ -26,6 +28,7 @@ class StrategyRunner:
         "keyword": "/search/keyword",
         "vector": "/search/vector",
         "hybrid": "/search/hybrid",
+        "graph": "/search/graph",
     }
 
     def __init__(self, base_url: str, timeout_seconds: int = 60) -> None:
@@ -67,6 +70,30 @@ class StrategyRunner:
 
         return self._extract_chunks(payload)
 
+    def list_sources(self) -> tuple[str, ...]:
+        url = f"{self.base_url}/sources"
+        request = Request(url=url, method="GET")
+
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise RuntimeError(
+                f"HTTP {exc.code} from {url}. Cannot build service catalogue."
+            ) from exc
+        except URLError as exc:
+            raise RuntimeError(
+                f"Failed to reach retrieval URL {self.base_url}: {exc.reason}."
+            ) from exc
+
+        if not isinstance(payload, dict):
+            return ()
+        raw_sources = payload.get("sources", [])
+        if not isinstance(raw_sources, list):
+            return ()
+        sources = [str(source).strip() for source in raw_sources if str(source).strip()]
+        return tuple(sorted(set(sources)))
+
     @staticmethod
     def _extract_chunks(payload: Any) -> list[StrategyResponseChunk]:
         chunks: list[StrategyResponseChunk] = []
@@ -76,18 +103,31 @@ class StrategyRunner:
         for response_row in payload:
             if not isinstance(response_row, dict):
                 continue
-            for chunk in response_row.get("chunks", []):
-                if not isinstance(chunk, dict):
-                    continue
-                chunk_id = str(chunk.get("chunk_id", "")).strip()
-                document_id = str(chunk.get("document_id", "")).strip()
-                score = float(chunk.get("score", 0.0))
-                if chunk_id and document_id:
-                    chunks.append(
-                        StrategyResponseChunk(
-                            chunk_id=chunk_id,
-                            document_id=document_id,
-                            score=score,
-                        )
-                    )
+            row_chunks = response_row.get("chunks", [])
+            if not isinstance(row_chunks, list):
+                continue
+            for chunk in row_chunks:
+                parsed = StrategyRunner._extract_chunk(chunk)
+                if parsed is not None:
+                    chunks.append(parsed)
         return chunks
+
+    @staticmethod
+    def _extract_chunk(chunk: Any) -> StrategyResponseChunk | None:
+        if not isinstance(chunk, dict):
+            return None
+        chunk_id = str(chunk.get("chunk_id", "")).strip()
+        document_id = str(chunk.get("document_id", "")).strip()
+        if not chunk_id or not document_id:
+            return None
+        score = float(chunk.get("score", 0.0))
+        source = str(chunk.get("source", "")).strip()
+        metadata_raw = chunk.get("metadata")
+        metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+        return StrategyResponseChunk(
+            chunk_id=chunk_id,
+            document_id=document_id,
+            score=score,
+            source=source,
+            metadata=metadata,
+        )
