@@ -1,4 +1,4 @@
-"""Retrieval baseline evaluator for keyword, vector, and hybrid strategies."""
+"""Retrieval evaluator for baseline and service-aware strategy variants."""
 
 from __future__ import annotations
 
@@ -10,13 +10,20 @@ from pathlib import Path
 from typing import Any
 
 from evaluation.harness.metrics import MetricsCalculator
-from evaluation.harness.schema import MetricRow, RetrievalErrorRow, RetrievalHit, RunMeta
+from evaluation.harness.schema import EvaluationResultRow, RunMeta
 from evaluation.harness.strategies import StrategyRunner
+from retrieval.strategies.metadata_aware import (
+    SERVICE_AWARE_SUFFIX,
+    ServiceAwarePlanner,
+    build_service_planner,
+    resolve_strategy_decision,
+    run_service_aware_strategy,
+)
 
 
 @dataclass(frozen=True)
 class EvaluationRunResult:
-    """Paths and summary values from a retrieval baseline run."""
+    """Paths and summary values from a retrieval run."""
 
     run_id: str
     query_count: int
@@ -33,14 +40,14 @@ class RetrievalBaselineEvaluator:
         strategies: tuple[str, ...],
         k_values: tuple[int, ...],
         timeout_seconds: int,
-        use_source_filters: bool,
+        service_catalogue_path: Path | None,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.retrieval_url = retrieval_url
         self.strategies = strategies
         self.k_values = tuple(sorted(set(k_values)))
         self.timeout_seconds = timeout_seconds
-        self.use_source_filters = use_source_filters
+        self.service_catalogue_path = service_catalogue_path
         self.metrics = MetricsCalculator()
         self.strategy_runner = StrategyRunner(retrieval_url, timeout_seconds=timeout_seconds)
 
@@ -48,12 +55,20 @@ class RetrievalBaselineEvaluator:
         queries = self._load_jsonl(self.dataset_dir / "queries_v1.jsonl")
         qrels = self._load_jsonl(self.dataset_dir / "qrels_v1.jsonl")
         dataset_meta = self._load_dataset_meta(self.dataset_dir / "dataset_meta.json")
-
         if limit is not None and limit > 0:
             queries = queries[:limit]
 
         qrels_by_query = self._build_qrels_by_query(qrels)
         run_id = self._build_run_id()
+        has_service_aware_variant = any(strategy.endswith(SERVICE_AWARE_SUFFIX) for strategy in self.strategies)
+        planner = (
+            build_service_planner(
+                list_sources=self.strategy_runner.list_sources,
+                service_catalogue_path=self.service_catalogue_path,
+            )
+            if has_service_aware_variant
+            else ServiceAwarePlanner(())
+        )
 
         run_meta = RunMeta(
             run_id=run_id,
@@ -67,146 +82,87 @@ class RetrievalBaselineEvaluator:
             qrel_count=len(qrels),
             config={
                 "timeout_seconds": self.timeout_seconds,
-                "use_source_filters": self.use_source_filters,
                 "max_k": max(self.k_values),
+                "service_aware_enabled": has_service_aware_variant,
+                "metadata_boost_mode": "rrf",
+                "service_catalogue_path": str(self.service_catalogue_path) if self.service_catalogue_path else "retrieval:/sources",
             },
         )
 
-        raw_hits: list[RetrievalHit] = []
-        error_rows: list[RetrievalErrorRow] = []
-        metric_rows: list[MetricRow] = []
-        query_rows: list[dict[str, Any]] = []
-
+        results_rows: list[dict[str, Any]] = []
         for query in queries:
-            query_id = str(query["query_id"])
-            query_text = str(query["query_text"])
-            category = str(query["category"])
-            services = tuple(query.get("services", []))
-            relevant_doc_ids = qrels_by_query.get(query_id, set())
-
-            for strategy in self.strategies:
-                chunks = []
-                strategy_error = ""
-                try:
-                    chunks = self.strategy_runner.search(
-                        strategy=strategy,
-                        query_text=query_text,
-                        top_k=max(self.k_values),
-                        sources=services if self.use_source_filters else (),
-                    )
-                except RuntimeError as exc:
-                    strategy_error = str(exc)
-                    for k in self.k_values:
-                        error_rows.append(
-                            RetrievalErrorRow(
-                                run_id=run_id,
-                                query_id=query_id,
-                                category=category,
-                                strategy=strategy,
-                                k=k,
-                                error=strategy_error,
-                            )
-                        )
-
-                hits: list[RetrievalHit] = []
-                for rank, chunk in enumerate(chunks, start=1):
-                    hits.append(
-                        RetrievalHit(
-                            query_id=query_id,
-                            category=category,
-                            strategy=strategy,
-                            rank=rank,
-                            doc_id=chunk.document_id,
-                            chunk_id=chunk.chunk_id,
-                            score=chunk.score,
-                        )
-                    )
-                raw_hits.extend(hits)
-
-                unique_doc_ids = self.metrics.unique_doc_ids_in_order([hit.doc_id for hit in hits])
-
-                for k in self.k_values:
-                    recall = self.metrics.recall_at_k(unique_doc_ids, relevant_doc_ids, k)
-                    precision = self.metrics.precision_at_k(unique_doc_ids, relevant_doc_ids, k)
-                    f1 = self.metrics.f1_score(recall, precision)
-                    hit_count = self.metrics.hit_count_at_k(unique_doc_ids, relevant_doc_ids, k)
-                    retrieved_count = min(k, len(unique_doc_ids))
-                    relevant_count = len(relevant_doc_ids)
-
-                    metric_rows.append(
-                        MetricRow(
-                            run_id=run_id,
-                            query_id=query_id,
-                            category=category,
-                            strategy=strategy,
-                            k=k,
-                            metric="recall",
-                            value=recall,
-                            relevant_count=relevant_count,
-                            retrieved_count=retrieved_count,
-                            hit_count=hit_count,
-                        )
-                    )
-                    metric_rows.append(
-                        MetricRow(
-                            run_id=run_id,
-                            query_id=query_id,
-                            category=category,
-                            strategy=strategy,
-                            k=k,
-                            metric="precision",
-                            value=precision,
-                            relevant_count=relevant_count,
-                            retrieved_count=retrieved_count,
-                            hit_count=hit_count,
-                        )
-                    )
-                    metric_rows.append(
-                        MetricRow(
-                            run_id=run_id,
-                            query_id=query_id,
-                            category=category,
-                            strategy=strategy,
-                            k=k,
-                            metric="f1",
-                            value=f1,
-                            relevant_count=relevant_count,
-                            retrieved_count=retrieved_count,
-                            hit_count=hit_count,
-                        )
-                    )
-
-                    query_rows.append(
-                        {
-                            "run_id": run_id,
-                            "query_id": query_id,
-                            "query_text": query_text,
-                            "category": category,
-                            "strategy": strategy,
-                            "k": k,
-                            "recall": recall,
-                            "precision": precision,
-                            "f1": f1,
-                            "relevant_count": relevant_count,
-                            "retrieved_count": retrieved_count,
-                            "hit_count": hit_count,
-                            "error": strategy_error,
-                        }
-                    )
+            results_rows.extend(
+                self._evaluate_query(
+                    run_id=run_id,
+                    query=query,
+                    qrels_by_query=qrels_by_query,
+                    planner=planner,
+                )
+            )
 
         run_writer = run_writer_cls(results_dir=results_dir, run_meta=run_meta)
-        run_writer.write(
-            raw_hits=raw_hits,
-            metric_rows=metric_rows,
-            query_rows=query_rows,
-            error_rows=error_rows,
-        )
+        run_writer.write(results_rows=results_rows)
+        return EvaluationRunResult(run_id=run_id, query_count=len(queries), qrel_count=len(qrels))
 
-        return EvaluationRunResult(
-            run_id=run_id,
-            query_count=len(queries),
-            qrel_count=len(qrels),
-        )
+    def _evaluate_query(
+        self,
+        *,
+        run_id: str,
+        query: dict[str, Any],
+        qrels_by_query: dict[str, set[str]],
+        planner: ServiceAwarePlanner,
+    ) -> list[dict[str, Any]]:
+        query_id = str(query["query_id"])
+        query_text = str(query["query_text"])
+        category = str(query["category"])
+        difficulty = self._as_int(query.get("difficulty"), default=0)
+        relevant_doc_ids = qrels_by_query.get(query_id, set())
+        decision = planner.plan(query_text)
+
+        rows: list[dict[str, Any]] = []
+        for strategy in self.strategies:
+            base_strategy, execution_decision = resolve_strategy_decision(
+                strategy=strategy,
+                planned_decision=decision,
+            )
+            outcome = run_service_aware_strategy(
+                search=self.strategy_runner.search,
+                base_strategy=base_strategy,
+                query_text=query_text,
+                decision=execution_decision,
+                top_k=max(self.k_values),
+            )
+            unique_doc_ids = self.metrics.unique_doc_ids_in_order([chunk.document_id for chunk in outcome.chunks])
+            for k in self.k_values:
+                recall = self.metrics.recall_at_k(unique_doc_ids, relevant_doc_ids, k)
+                precision = self.metrics.precision_at_k(unique_doc_ids, relevant_doc_ids, k)
+                f1 = self.metrics.f1_score(recall, precision)
+                hit_count = self.metrics.hit_count_at_k(unique_doc_ids, relevant_doc_ids, k)
+                mrr = self.metrics.mrr_at_k(unique_doc_ids, relevant_doc_ids, k)
+                ndcg = self.metrics.ndcg_at_k(unique_doc_ids, relevant_doc_ids, k)
+                rows.append(
+                    EvaluationResultRow(
+                        run_id=run_id,
+                        query_id=query_id,
+                        query_text=query_text,
+                        category=category,
+                        difficulty=difficulty,
+                        strategy=strategy,
+                        k=k,
+                        metadata_mode=outcome.metadata_mode,
+                        detected_services=";".join(outcome.detected_services),
+                        recall=recall,
+                        precision=precision,
+                        f1=f1,
+                        mrr=mrr,
+                        ndcg=ndcg,
+                        relevant_count=len(relevant_doc_ids),
+                        retrieved_count=min(k, len(unique_doc_ids)),
+                        hit_count=hit_count,
+                        error=outcome.strategy_error,
+                    ).to_dict()
+                )
+        return rows
 
     @staticmethod
     def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -232,6 +188,13 @@ class RetrievalBaselineEvaluator:
                 continue
             qrels_by_query.setdefault(query_id, set()).add(doc_id)
         return qrels_by_query
+
+    @staticmethod
+    def _as_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     def _build_run_id() -> str:
