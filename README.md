@@ -29,7 +29,9 @@ The generation service assembles retrieved context with citations and queries Cl
 
 ### Evaluation Framework
 
-The evaluation harness defines the methodology for comparing retrieval strategies. A fixed set of golden queries is run through retrieval-only and full end-to-end pipelines. Retrieval quality is assessed via LLM-based relevance classification (Arize Phoenix). End-to-end quality will be measured using RAGAS — faithfulness, answer relevancy, and context precision — with a P95 retrieval latency SLA of <3 seconds. *(Work in progress.)*
+The harness evaluates retrieval against the golden query set (`evaluation/datasets/v1`) and writes per-query metrics to `results.xlsx` (`results` sheet) plus aggregate sheets `category_results` and `difficulty_results` (recall, precision, F1, MRR, nDCG, hit_count).
+
+Service-aware variants (`*-service-aware`) derive routing from query text plus a service acronym catalogue (`service_acronyms.json`) or retrieval `/sources`, then apply metadata mode decisions (GLOBAL / HARD_FILTER / BOOST) and record routing fields alongside metrics.
 
 ## Prerequisites
 
