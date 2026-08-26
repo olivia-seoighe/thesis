@@ -143,6 +143,15 @@ def _get_summary_files() -> list[Path]:
     return [Path(os.environ["SUMMARIES_FILE"])]
 
 
+def _get_source(data: dict, summaries_file: Path) -> str:
+    source = str(data.get("repository", "")).strip()
+    if not source:
+        raise ValueError(
+            f"Missing required 'repository' field in summaries file: {summaries_file}"
+        )
+    return source
+
+
 async def main() -> None:
     skip_unchanged = os.getenv("SKIP_UNCHANGED", "false").lower() == "true"
     summary_files = _get_summary_files()
@@ -161,7 +170,7 @@ async def main() -> None:
                 data = json.load(f)
 
             files = data.get("files", [])
-            source = data.get("repository", "sample-service")
+            source = _get_source(data, summaries_file)
             logger.info(f"Loaded {len(files)} files from {summaries_file} (source={source})")
 
             for i, file_entry in enumerate(files, start=1):
