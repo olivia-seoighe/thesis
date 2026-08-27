@@ -58,7 +58,14 @@ class RetrievalBaselineEvaluator:
         if limit is not None and limit > 0:
             queries = queries[:limit]
 
-        qrels_by_query = self._build_qrels_by_query(qrels)
+        qrel_scheme = str(dataset_meta.get("qrel_scheme", "binary")).strip().lower()
+        if qrel_scheme not in {"binary", "graded"}:
+            qrel_scheme = "binary"
+        qrel_grades_by_query = self._build_qrel_grades_by_query(qrels)
+        qrels_by_query = self._build_relevant_doc_ids_by_query(
+            qrel_grades_by_query=qrel_grades_by_query,
+            qrel_scheme=qrel_scheme,
+        )
         run_id = self._build_run_id()
         has_service_aware_variant = any(strategy.endswith(SERVICE_AWARE_SUFFIX) for strategy in self.strategies)
         planner = (
@@ -85,6 +92,7 @@ class RetrievalBaselineEvaluator:
                 "max_k": max(self.k_values),
                 "service_aware_enabled": has_service_aware_variant,
                 "metadata_boost_mode": "rrf",
+                "qrel_scheme": qrel_scheme,
                 "service_catalogue_path": str(self.service_catalogue_path) if self.service_catalogue_path else "retrieval:/sources",
             },
         )
@@ -96,6 +104,8 @@ class RetrievalBaselineEvaluator:
                     run_id=run_id,
                     query=query,
                     qrels_by_query=qrels_by_query,
+                    qrel_grades_by_query=qrel_grades_by_query,
+                    qrel_scheme=qrel_scheme,
                     planner=planner,
                 )
             )
@@ -110,6 +120,8 @@ class RetrievalBaselineEvaluator:
         run_id: str,
         query: dict[str, Any],
         qrels_by_query: dict[str, set[str]],
+        qrel_grades_by_query: dict[str, dict[str, int]],
+        qrel_scheme: str,
         planner: ServiceAwarePlanner,
     ) -> list[dict[str, Any]]:
         query_id = str(query["query_id"])
@@ -117,6 +129,7 @@ class RetrievalBaselineEvaluator:
         category = str(query["category"])
         difficulty = self._as_int(query.get("difficulty"), default=0)
         relevant_doc_ids = qrels_by_query.get(query_id, set())
+        relevance_by_doc_id = qrel_grades_by_query.get(query_id, {})
         decision = planner.plan(query_text)
 
         rows: list[dict[str, Any]] = []
@@ -139,7 +152,10 @@ class RetrievalBaselineEvaluator:
                 f1 = self.metrics.f1_score(recall, precision)
                 hit_count = self.metrics.hit_count_at_k(unique_doc_ids, relevant_doc_ids, k)
                 mrr = self.metrics.mrr_at_k(unique_doc_ids, relevant_doc_ids, k)
-                ndcg = self.metrics.ndcg_at_k(unique_doc_ids, relevant_doc_ids, k)
+                if qrel_scheme == "graded":
+                    ndcg = self.metrics.ndcg_at_k_graded(unique_doc_ids, relevance_by_doc_id, k)
+                else:
+                    ndcg = self.metrics.ndcg_at_k(unique_doc_ids, relevant_doc_ids, k)
                 rows.append(
                     EvaluationResultRow(
                         run_id=run_id,
@@ -179,15 +195,35 @@ class RetrievalBaselineEvaluator:
         return json.loads(path.read_text(encoding="utf-8"))
 
     @staticmethod
-    def _build_qrels_by_query(qrels: list[dict[str, Any]]) -> dict[str, set[str]]:
-        qrels_by_query: dict[str, set[str]] = {}
+    def _build_qrel_grades_by_query(qrels: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+        qrels_by_query: dict[str, dict[str, int]] = {}
         for qrel in qrels:
             query_id = str(qrel.get("query_id", "")).strip()
             doc_id = str(qrel.get("doc_id", "")).strip()
             if not query_id or not doc_id:
                 continue
-            qrels_by_query.setdefault(query_id, set()).add(doc_id)
+            relevance = RetrievalBaselineEvaluator._as_int(qrel.get("relevance"), default=1)
+            query_grades = qrels_by_query.setdefault(query_id, {})
+            current = query_grades.get(doc_id)
+            if current is None or relevance > current:
+                query_grades[doc_id] = relevance
         return qrels_by_query
+
+    @staticmethod
+    def _build_relevant_doc_ids_by_query(
+        *,
+        qrel_grades_by_query: dict[str, dict[str, int]],
+        qrel_scheme: str,
+    ) -> dict[str, set[str]]:
+        min_relevance = 2 if qrel_scheme == "graded" else 1
+        relevant_doc_ids_by_query: dict[str, set[str]] = {}
+        for query_id, doc_grades in qrel_grades_by_query.items():
+            relevant_doc_ids_by_query[query_id] = {
+                doc_id
+                for doc_id, relevance in doc_grades.items()
+                if relevance >= min_relevance
+            }
+        return relevant_doc_ids_by_query
 
     @staticmethod
     def _as_int(value: Any, default: int) -> int:

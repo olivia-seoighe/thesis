@@ -24,10 +24,20 @@ class DatasetBuildSummary:
 class GoldenDatasetBuilder:
     """Normalizes golden query JSON into frozen query and qrels files."""
 
-    def __init__(self, input_json: Path, output_dir: Path, dataset_version: str) -> None:
+    def __init__(
+        self,
+        input_json: Path,
+        output_dir: Path,
+        dataset_version: str,
+        qrel_scheme: str = "binary",
+    ) -> None:
         self.input_json = input_json
         self.output_dir = output_dir
         self.dataset_version = dataset_version
+        normalized_scheme = qrel_scheme.strip().lower()
+        if normalized_scheme not in {"binary", "graded"}:
+            raise ValueError("qrel_scheme must be either 'binary' or 'graded'.")
+        self.qrel_scheme = normalized_scheme
 
     def build(self) -> DatasetBuildSummary:
         payload = json.loads(self.input_json.read_text(encoding="utf-8"))
@@ -52,10 +62,10 @@ class GoldenDatasetBuilder:
             wording_type = str(raw_query.get("wording_type", "Unknown")).strip() or "Unknown"
             services = tuple(self._parse_services(raw_query.get("gold_services")))
 
-            source_pairs = self._parse_gold_source_files(raw_query, services)
-            source_pairs = self._canonicalize_source_pairs(source_pairs)
+            source_rows = self._parse_gold_source_files(raw_query, services)
+            source_rows = self._canonicalize_source_rows(source_rows)
 
-            if not query_id or not query_text or not source_pairs:
+            if not query_id or not query_text or not source_rows:
                 dropped_missing_qrels += 1
                 continue
 
@@ -70,7 +80,7 @@ class GoldenDatasetBuilder:
                 )
             )
 
-            for service, file_path in source_pairs:
+            for service, file_path, relevance in source_rows:
                 doc_id = self._build_doc_id(service, file_path)
                 qrel_records.append(
                     QrelRecord(
@@ -78,7 +88,7 @@ class GoldenDatasetBuilder:
                         doc_id=doc_id,
                         service=service,
                         file_path=file_path,
-                        relevance=1,
+                        relevance=relevance,
                     )
                 )
 
@@ -95,6 +105,7 @@ class GoldenDatasetBuilder:
 
         dataset_meta = {
             "dataset_version": self.dataset_version,
+            "qrel_scheme": self.qrel_scheme,
             "source_file": str(self.input_json),
             "query_count": len(query_records),
             "qrel_count": len(qrel_records),
@@ -144,9 +155,9 @@ class GoldenDatasetBuilder:
         self,
         raw_query: dict[str, Any],
         services: tuple[str, ...],
-    ) -> list[tuple[str, str]]:
+    ) -> list[tuple[str, str, int]]:
         raw_sources = raw_query.get("gold_source_files")
-        pairs: list[tuple[str, str]] = []
+        rows: list[tuple[str, str, int]] = []
 
         if isinstance(raw_sources, list):
             for item in raw_sources:
@@ -154,53 +165,70 @@ class GoldenDatasetBuilder:
                     service = str(item.get("service", "")).strip()
                     file_path = str(item.get("file", "")).strip()
                     if service and file_path:
-                        pairs.append((service, file_path))
+                        rows.append(
+                            (
+                                service,
+                                file_path,
+                                self._resolve_qrel_relevance(
+                                    item.get("relevance", item.get("grade"))
+                                ),
+                            )
+                        )
                 elif isinstance(item, str):
-                    pairs.extend(self._parse_source_string(item, services))
+                    rows.extend(self._parse_source_string(item, services))
         elif isinstance(raw_sources, str):
-            pairs.extend(self._parse_source_string(raw_sources, services))
+            rows.extend(self._parse_source_string(raw_sources, services))
 
-        return pairs
+        return rows
 
     def _parse_source_string(
         self,
         raw_value: str,
         services: tuple[str, ...],
-    ) -> list[tuple[str, str]]:
+    ) -> list[tuple[str, str, int]]:
         chunks: list[str] = []
         if "\n" in raw_value:
             chunks = [line.strip() for line in raw_value.splitlines() if line.strip()]
         else:
             chunks = [part.strip() for part in raw_value.split(";") if part.strip()]
 
-        pairs: list[tuple[str, str]] = []
+        rows: list[tuple[str, str, int]] = []
         for chunk in chunks:
             if "::" in chunk:
                 service, file_path = chunk.split("::", 1)
                 service = service.strip()
                 file_path = file_path.strip()
                 if service and file_path:
-                    pairs.append((service, file_path))
+                    rows.append((service, file_path, self._resolve_qrel_relevance(None)))
                 continue
 
             if len(services) == 1:
-                pairs.append((services[0], chunk))
+                rows.append((services[0], chunk, self._resolve_qrel_relevance(None)))
 
-        return pairs
+        return rows
 
-    def _canonicalize_source_pairs(
+    def _canonicalize_source_rows(
         self,
-        pairs: list[tuple[str, str]],
-    ) -> list[tuple[str, str]]:
-        canonical_pairs: set[tuple[str, str]] = set()
+        rows: list[tuple[str, str, int]],
+    ) -> list[tuple[str, str, int]]:
+        canonical_rows: dict[tuple[str, str], int] = {}
 
-        for service, raw_file_path in pairs:
+        for service, raw_file_path, relevance in rows:
             clean_service = service.strip()
             clean_file_path = self._canonicalize_path(raw_file_path, clean_service)
             if clean_service and clean_file_path:
-                canonical_pairs.add((clean_service, clean_file_path))
+                key = (clean_service, clean_file_path)
+                current_relevance = canonical_rows.get(key)
+                if current_relevance is None or relevance > current_relevance:
+                    canonical_rows[key] = relevance
 
-        return sorted(canonical_pairs)
+        return sorted(
+            (
+                (service, file_path, relevance)
+                for (service, file_path), relevance in canonical_rows.items()
+            ),
+            key=lambda row: (row[0], row[1]),
+        )
 
     @staticmethod
     def _canonicalize_path(raw_file_path: str, service: str) -> str:
@@ -218,17 +246,31 @@ class GoldenDatasetBuilder:
     def _build_doc_id(service: str, file_path: str) -> str:
         return hashlib.sha256(f"{service}::{file_path}".encode("utf-8")).hexdigest()
 
+    def _resolve_qrel_relevance(self, raw_value: Any) -> int:
+        if self.qrel_scheme == "binary":
+            return 1
+
+        if raw_value is None:
+            return 3
+
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            return 3
+        return max(0, min(3, parsed))
+
     @staticmethod
     def _dedupe_qrels(qrels: list[QrelRecord]) -> list[QrelRecord]:
-        seen: set[tuple[str, str]] = set()
-        deduped: list[QrelRecord] = []
+        deduped_map: dict[tuple[str, str], QrelRecord] = {}
         for qrel in qrels:
             key = (qrel.query_id, qrel.doc_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(qrel)
-        return deduped
+            existing = deduped_map.get(key)
+            if existing is None or qrel.relevance > existing.relevance:
+                deduped_map[key] = qrel
+        return sorted(
+            deduped_map.values(),
+            key=lambda row: (row.query_id, row.doc_id),
+        )
 
     @staticmethod
     def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

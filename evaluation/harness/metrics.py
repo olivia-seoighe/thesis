@@ -67,3 +67,35 @@ class MetricsCalculator:
         if idcg <= 0.0:
             return 0.0
         return dcg / idcg
+
+    @staticmethod
+    def ndcg_at_k_graded(
+        retrieved_doc_ids: list[str],
+        relevance_by_doc_id: dict[str, int],
+        k: int,
+    ) -> float:
+        if k <= 0 or not relevance_by_doc_id:
+            return 0.0
+
+        def gain(relevance: int) -> float:
+            return float((2**relevance) - 1)
+
+        dcg = 0.0
+        for rank, doc_id in enumerate(retrieved_doc_ids[:k], start=1):
+            relevance = max(0, int(relevance_by_doc_id.get(doc_id, 0)))
+            if relevance > 0:
+                dcg += gain(relevance) / log2(rank + 1)
+
+        positive_relevances = sorted(
+            (max(0, int(relevance)) for relevance in relevance_by_doc_id.values() if int(relevance) > 0),
+            reverse=True,
+        )
+        if not positive_relevances:
+            return 0.0
+
+        idcg = 0.0
+        for rank, relevance in enumerate(positive_relevances[:k], start=1):
+            idcg += gain(relevance) / log2(rank + 1)
+        if idcg <= 0.0:
+            return 0.0
+        return dcg / idcg

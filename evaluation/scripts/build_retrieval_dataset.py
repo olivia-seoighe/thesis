@@ -36,6 +36,13 @@ def parse_args() -> argparse.Namespace:
         default="v1",
         help="Dataset version label.",
     )
+    parser.add_argument(
+        "--qrel-scheme",
+        type=str,
+        choices=("binary", "graded"),
+        default="binary",
+        help="QREL interpretation scheme. Use 'graded' for 0..3 graded relevance labels.",
+    )
     return parser.parse_args()
 
 
@@ -47,6 +54,7 @@ def main() -> None:
         input_json=args.input_json,
         output_dir=args.output_dir,
         dataset_version=args.dataset_version,
+        qrel_scheme=args.qrel_scheme,
     )
     summary = builder.build()
 
