@@ -13,7 +13,13 @@ from .config import (
     RANK_DECAY_ADAPTIVE_ESCALATED,
     RANK_DECAY_FIXED,
 )
-from .entity_linker import build_query_seed_mentions, build_seed_candidates, infer_intent_from_seed_labels
+from .entity_linker import (
+    build_query_seed_mentions,
+    build_seed_candidates,
+    infer_intent_from_seed_labels,
+    resolve_effective_sources,
+    resolve_topology_scope,
+)
 from .hop_policy import next_hop_budget, plan_traversal, prune_frontier_rows, should_escalate_depth, should_stop
 from .queries import build_evidence_query, build_frontier_expansion_query
 from .ranker import aggregate_to_chunks, extract_query_terms
@@ -28,6 +34,7 @@ from .types import (
     RankingContext,
     SeedMatch,
     SeedResolution,
+    TopologyScope,
     TraversalEscalationStep,
     GraphTraversalMeta,
     TraversalPlan,
@@ -61,6 +68,18 @@ class GraphClient:
 
         seed_resolution = await resolve_seeds(seed_request, self.cm)
         seed_ms = (time.time() - seed_start) * 1000
+        topology_scope = resolve_topology_scope(
+            query=request.query,
+            explicit_sources=request.sources,
+            mentions=seed_request.mentions,
+            seed_matches=seed_resolution.matches,
+        )
+        effective_sources = resolve_effective_sources(
+            explicit_sources=request.sources,
+            mentions=seed_request.mentions,
+            seed_matches=seed_resolution.matches,
+            topology_scope=topology_scope,
+        )
         if not seed_resolution.matches:
             logger.info(
                 "Graph search returned no seed matches",
@@ -111,7 +130,7 @@ class GraphClient:
         ranking_start = time.time()
         candidates = self._build_candidates(
             evidence_rows,
-            request.sources,
+            effective_sources,
             intent=effective_intent,
             seed_node_labels={match.node.node_label for match in seed_resolution.matches},
             mention_label_hints={mention.preferred_label for mention in seed_request.mentions if mention.preferred_label},
@@ -122,7 +141,7 @@ class GraphClient:
 
         path_mapping = self._build_path_mapping(neighborhood_rows, seed_resolution.matches)
         candidate_pool_size = request.top_k
-        if effective_intent == QueryIntent.TOPOLOGY:
+        if effective_intent == QueryIntent.TOPOLOGY and topology_scope == TopologyScope.GLOBAL:
             candidate_pool_size = min(200, max(request.top_k * 6, request.top_k))
 
         ranked = aggregate_to_chunks(
@@ -138,7 +157,7 @@ class GraphClient:
                 query_terms=extract_query_terms(request.query),
             ),
         )
-        if effective_intent == QueryIntent.TOPOLOGY:
+        if effective_intent == QueryIntent.TOPOLOGY and topology_scope == TopologyScope.GLOBAL:
             ranked = self._apply_service_diversity(ranked, request.top_k, strict=True)
         ranked = self._apply_document_diversity(ranked, request.max_chunks_per_document)
         ranking_ms = (time.time() - ranking_start) * 1000
@@ -172,7 +191,7 @@ class GraphClient:
             search_duration_ms=total_ms,
             embedding_duration_ms=0.0,
             model_used="graph-traversal-v1",
-            source_searched=",".join(request.sources) if request.sources else "all",
+            source_searched=",".join(effective_sources) if effective_sources else "all",
         )
 
     @staticmethod

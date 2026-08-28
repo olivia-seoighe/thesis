@@ -37,6 +37,12 @@ class QueryIntent(StrEnum):
     GENERAL = "GENERAL"
 
 
+class TopologyScope(StrEnum):
+    GLOBAL = "global"
+    SERVICE_SCOPED = "service-scoped"
+    TARGETED_MULTI_SERVICE = "targeted-multi-service"
+
+
 @dataclass(frozen=True)
 class EntityMention:
     text: str

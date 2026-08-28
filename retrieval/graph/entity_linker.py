@@ -11,7 +11,15 @@ from retrieval.query_processor import expand_query_text, normalize_query_token
 from .lexicon import (
     COMMON_QUERY_STOPWORDS,
 )
-from .types import REPO_LABEL, SEEDABLE_NODE_LABELS, EntityMention, QueryIntent, SeedRequest
+from .types import (
+    REPO_LABEL,
+    SEEDABLE_NODE_LABELS,
+    EntityMention,
+    QueryIntent,
+    SeedMatch,
+    SeedRequest,
+    TopologyScope,
+)
 
 _QUERY_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _MAX_QUERY_TOKEN_MENTIONS = 12
@@ -36,6 +44,13 @@ _GLOBAL_LABELS: frozenset[str] = frozenset(
         "NUGET_PACKAGE",
         "FRAMEWORK",
     }
+)
+_CROSS_SERVICE_QUERY_HINTS: tuple[str, ...] = (
+    "across services",
+    "which services",
+    "cross service",
+    "cross-service",
+    "all services",
 )
 
 
@@ -139,6 +154,56 @@ def infer_intent_from_seed_labels(
     return fallback_intent
 
 
+def resolve_topology_scope(
+    *,
+    query: str,
+    explicit_sources: list[str],
+    mentions: tuple[EntityMention, ...],
+    seed_matches: tuple[SeedMatch, ...],
+) -> TopologyScope:
+    if explicit_sources:
+        return _topology_scope_for_sources(explicit_sources)
+
+    if _requests_cross_service(query):
+        return TopologyScope.GLOBAL
+
+    alias_repo_sources = _repo_sources_from_mentions(mentions)
+    if alias_repo_sources:
+        return _topology_scope_for_sources(alias_repo_sources)
+
+    repo_seed_sources = _repo_seed_sources(seed_matches)
+    if repo_seed_sources:
+        return _topology_scope_for_sources(repo_seed_sources)
+    return TopologyScope.GLOBAL
+
+
+def resolve_effective_sources(
+    *,
+    explicit_sources: list[str],
+    mentions: tuple[EntityMention, ...],
+    seed_matches: tuple[SeedMatch, ...],
+    topology_scope: TopologyScope,
+) -> list[str]:
+    if explicit_sources:
+        return sorted({source for source in explicit_sources if source})
+    if topology_scope == TopologyScope.GLOBAL:
+        return []
+    alias_repo_sources = _repo_sources_from_mentions(mentions)
+    if alias_repo_sources:
+        return sorted(alias_repo_sources)
+    repo_seed_sources = _repo_seed_sources(seed_matches)
+    if repo_seed_sources:
+        return sorted(repo_seed_sources)
+    return []
+
+
+def _topology_scope_for_sources(sources: Iterable[str]) -> TopologyScope:
+    unique_sources = {source.strip() for source in sources if source and source.strip()}
+    if len(unique_sources) <= 1:
+        return TopologyScope.SERVICE_SCOPED
+    return TopologyScope.TARGETED_MULTI_SERVICE
+
+
 def _extract_query_token_mentions(query: str) -> list[EntityMention]:
     mentions: list[EntityMention] = []
     seen: set[str] = set()
@@ -160,6 +225,29 @@ def _extract_query_token_mentions(query: str) -> list[EntityMention]:
             if len(seen) >= _MAX_QUERY_TOKEN_MENTIONS:
                 return mentions
     return mentions
+
+
+def _repo_seed_sources(seed_matches: tuple[SeedMatch, ...]) -> set[str]:
+    return {
+        match.node.node_name
+        for match in seed_matches
+        if match.node.node_label == REPO_LABEL and match.node.node_name
+    }
+
+
+def _repo_sources_from_mentions(mentions: tuple[EntityMention, ...]) -> set[str]:
+    return {
+        mention.text.strip()
+        for mention in mentions
+        if mention.preferred_label == REPO_LABEL and mention.text.strip()
+    }
+
+
+def _requests_cross_service(query: str) -> bool:
+    normalized = (query or "").strip().lower()
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in _CROSS_SERVICE_QUERY_HINTS)
 
 
 def _normalized_query_token_forms(token: str) -> tuple[str, ...]:
