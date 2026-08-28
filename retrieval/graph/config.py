@@ -50,23 +50,6 @@ INITIAL_TOPOLOGY_MAX_LATENCY_MS: Final[int] = int(
     os.getenv("GRAPH_INIT_TOPOLOGY_MAX_LATENCY_MS", "1600")
 )  # Target latency budget for topology mode under normal load.
 
-INITIAL_FLOW_MAX_HOPS: Final[int] = int(os.getenv("GRAPH_INIT_FLOW_MAX_HOPS", "3"))  # Flow tracing needs one extra hop for producer/consumer chains.
-INITIAL_FLOW_MAX_NODES_PER_HOP: Final[int] = int(
-    os.getenv("GRAPH_INIT_FLOW_MAX_NODES_PER_HOP", "42")
-)  # Narrower breadth than topology to stay focused on causal chains.
-INITIAL_FLOW_MAX_EDGES_PER_NODE: Final[int] = int(
-    os.getenv("GRAPH_INIT_FLOW_MAX_EDGES_PER_NODE", "6")
-)  # Restrains branching while preserving alternate route discovery.
-INITIAL_FLOW_GLOBAL_PATH_BUDGET: Final[int] = int(
-    os.getenv("GRAPH_INIT_FLOW_GLOBAL_PATH_BUDGET", "280")
-)  # Balanced cap for recall on flows without topology-style breadth.
-INITIAL_FLOW_GLOBAL_NODE_BUDGET: Final[int] = int(
-    os.getenv("GRAPH_INIT_FLOW_GLOBAL_NODE_BUDGET", "280")
-)  # Matches path scale for consistent pruning behavior.
-INITIAL_FLOW_MAX_LATENCY_MS: Final[int] = int(
-    os.getenv("GRAPH_INIT_FLOW_MAX_LATENCY_MS", "1800")
-)  # Slightly higher latency allowance due to deeper default hops.
-
 INITIAL_LOCAL_MAX_HOPS: Final[int] = int(os.getenv("GRAPH_INIT_LOCAL_MAX_HOPS", "3"))  # Local logic often spans handler->command/event chains.
 INITIAL_LOCAL_MAX_NODES_PER_HOP: Final[int] = int(
     os.getenv("GRAPH_INIT_LOCAL_MAX_NODES_PER_HOP", "34")
@@ -82,24 +65,7 @@ INITIAL_LOCAL_GLOBAL_NODE_BUDGET: Final[int] = int(
 )  # Keeps node growth proportional to local path budget.
 INITIAL_LOCAL_MAX_LATENCY_MS: Final[int] = int(
     os.getenv("GRAPH_INIT_LOCAL_MAX_LATENCY_MS", "1800")
-)  # Similar to flow due to same hop depth and AST-heavy filtering.
-
-INITIAL_CONFIG_MAX_HOPS: Final[int] = int(os.getenv("GRAPH_INIT_CONFIG_MAX_HOPS", "2"))  # Config questions are usually direct dependency lookups.
-INITIAL_CONFIG_MAX_NODES_PER_HOP: Final[int] = int(
-    os.getenv("GRAPH_INIT_CONFIG_MAX_NODES_PER_HOP", "50")
-)  # Moderate breadth to cover environment/config fan-out.
-INITIAL_CONFIG_MAX_EDGES_PER_NODE: Final[int] = int(
-    os.getenv("GRAPH_INIT_CONFIG_MAX_EDGES_PER_NODE", "7")
-)  # Slightly elevated for config hubs that legitimately connect multiple targets.
-INITIAL_CONFIG_GLOBAL_PATH_BUDGET: Final[int] = int(
-    os.getenv("GRAPH_INIT_CONFIG_GLOBAL_PATH_BUDGET", "280")
-)  # Sized between topology and local logic for mixed breadth/precision.
-INITIAL_CONFIG_GLOBAL_NODE_BUDGET: Final[int] = int(
-    os.getenv("GRAPH_INIT_CONFIG_GLOBAL_NODE_BUDGET", "280")
-)  # Parity with path budget keeps pruning predictable.
-INITIAL_CONFIG_MAX_LATENCY_MS: Final[int] = int(
-    os.getenv("GRAPH_INIT_CONFIG_MAX_LATENCY_MS", "1600")
-)  # Config mode aims for topology-like latency expectations.
+)  # Local mode allows deeper AST-heavy traversals.
 
 INITIAL_GENERAL_MAX_HOPS: Final[int] = int(
     os.getenv("GRAPH_INIT_GENERAL_MAX_HOPS", "2")

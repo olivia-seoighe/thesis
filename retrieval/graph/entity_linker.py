@@ -3,69 +3,84 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from collections.abc import Iterable
 
-from retrieval.query_processor import normalize_query_token
+from retrieval.query_processor import expand_query_text, normalize_query_token
 
 from .lexicon import (
     COMMON_QUERY_STOPWORDS,
-    CONFIG_INTENT_TERMS,
-    FLOW_INTENT_TERMS,
-    LOCAL_INTENT_TERMS,
-    TOPOLOGY_INTENT_TERMS,
 )
-from .types import (
-    API_LABEL,
-    COMMAND_LABEL,
-    EVENT_LABEL,
-    HANDLER_LABEL,
-    REPO_LABEL,
-    SAGA_LABEL,
-    TOPIC_LABEL,
-    EntityMention,
-    QueryIntent,
-    SeedRequest,
-)
+from .types import REPO_LABEL, SEEDABLE_NODE_LABELS, EntityMention, QueryIntent, SeedRequest
 
-_SERVICE_RE = re.compile(r"\b([a-z0-9][a-z0-9-]*-service)\b", re.IGNORECASE)
-_QUOTED_RE = re.compile(r'["\']([^"\']+)["\']')
-_TOPIC_HINT_RE = re.compile(r"\btopics?\s+([a-z0-9._-]+)\b", re.IGNORECASE)
-_API_HINT_RE = re.compile(r"\bapi\s+([/\w{}-]+)\b", re.IGNORECASE)
-_REPO_TOKEN_RE = re.compile(r"\b([a-z0-9]+(?:-[a-z0-9]+)+)\b", re.IGNORECASE)
-_REPO_SUFFIXES = ("-service", "-api", "-system", "-bff", "-workflow")
-_SYMBOL_HINT_RE = re.compile(r"\b([A-Z][A-Za-z0-9]{3,}(?:Handler|Command|Event|Saga|Request))\b")
-_SYMBOL_SUFFIX_TO_LABEL: tuple[tuple[str, str], ...] = (
-    ("Handler", HANDLER_LABEL),
-    ("Saga", SAGA_LABEL),
-    ("Event", EVENT_LABEL),
-    ("Command", COMMAND_LABEL),
-    ("Request", COMMAND_LABEL),
+_QUERY_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+_MAX_QUERY_TOKEN_MENTIONS = 12
+_LABEL_HINTS_BY_TOKEN: dict[str, tuple[str, ...]]
+_LOCAL_LABELS: frozenset[str] = frozenset(
+    {
+        "HANDLER",
+        "COMMAND",
+        "EVENT",
+        "SAGA",
+        "FEATURE_FLAG",
+        "BUSINESS_RULE",
+        "STATUS_CODE",
+        "TABLE",
+    }
+)
+_GLOBAL_LABELS: frozenset[str] = frozenset(
+    {
+        REPO_LABEL,
+        "KAFKA_TOPIC",
+        "API",
+        "NUGET_PACKAGE",
+        "FRAMEWORK",
+    }
 )
 
 
-def detect_intent(query: str) -> QueryIntent:
-    lowered = query.lower()
-    if any(term in lowered for term in CONFIG_INTENT_TERMS):
-        return QueryIntent.CONFIG
-    if any(term in lowered for term in TOPOLOGY_INTENT_TERMS):
-        return QueryIntent.TOPOLOGY
-    if any(term in lowered for term in FLOW_INTENT_TERMS):
-        return QueryIntent.FLOW
-    if any(term in lowered for term in LOCAL_INTENT_TERMS):
-        return QueryIntent.LOCAL_LOGIC
-    return QueryIntent.GENERAL
+@dataclass(frozen=True)
+class _AliasEntry:
+    source: str
+    short_forms: tuple[str, ...]
+    long_forms: tuple[str, ...]
+
+
+def build_query_seed_mentions(
+    query: str,
+    service_catalogue: Iterable[tuple[str, Iterable[str]]],
+) -> tuple[str, list[EntityMention]]:
+    normalized_query = normalize_query_text(query)
+    preprocessed_query = expand_service_aliases_in_query(normalized_query, service_catalogue)
+    mentions = extract_mentions(preprocessed_query)
+    expanded_mentions = expand_aliases(mentions, service_catalogue, preprocessed_query)
+    return preprocessed_query, expanded_mentions
+
+
+def normalize_query_text(query: str) -> str:
+    return " ".join(query.split())
+
+
+def expand_service_aliases_in_query(
+    query: str,
+    service_catalogue: Iterable[tuple[str, Iterable[str]]],
+) -> str:
+    entries = tuple(
+        _AliasEntry(
+            source=canonical_service,
+            short_forms=tuple(aliases),
+            long_forms=(),
+        )
+        for canonical_service, aliases in service_catalogue
+        if canonical_service
+    )
+    if not entries:
+        return query
+    return expand_query_text(query, entries)
 
 
 def extract_mentions(query: str) -> list[EntityMention]:
-    mentions = (
-        _extract_service_mentions(query)
-        + _extract_repo_token_mentions(query)
-        + _extract_symbol_mentions(query)
-        + _extract_topic_mentions(query)
-        + _extract_api_mentions(query)
-        + _extract_quoted_mentions(query)
-    )
-    return _dedupe_mentions(mentions)
+    return _dedupe_mentions(_extract_query_token_mentions(query))
 
 
 def expand_aliases(
@@ -80,9 +95,7 @@ def expand_aliases(
         if canonical_service:
             expanded.append(_repo_mention(canonical_service, max(mention.confidence, 0.95)))
         expanded.append(mention)
-
     expanded.extend(_extract_query_service_mentions(query_text=query_text, aliases_by_service=aliases_by_service))
-
     return _dedupe_mentions(expanded)
 
 
@@ -92,12 +105,90 @@ def build_seed_candidates(
     *,
     source_filters: list[str] | None = None,
 ) -> SeedRequest:
+    deduped_mentions = tuple(_dedupe_mentions(mentions))
     return SeedRequest(
         query=query,
-        intent=detect_intent(query),
-        mentions=tuple(_dedupe_mentions(mentions)),
+        intent=infer_intent_from_mentions(deduped_mentions),
+        mentions=deduped_mentions,
         source_filters=tuple(source_filters or ()),
     )
+
+
+def infer_intent_from_mentions(mentions: tuple[EntityMention, ...]) -> QueryIntent:
+    labels = {mention.preferred_label for mention in mentions if mention.preferred_label}
+    return infer_intent_from_seed_labels(labels, fallback_intent=QueryIntent.GENERAL)
+
+
+def infer_intent_from_seed_labels(
+    labels: set[str] | frozenset[str],
+    *,
+    fallback_intent: QueryIntent = QueryIntent.GENERAL,
+) -> QueryIntent:
+    normalized_labels = {label.upper() for label in labels if label}
+    has_local_labels = bool(normalized_labels & _LOCAL_LABELS)
+    has_global_labels = bool(normalized_labels & _GLOBAL_LABELS)
+
+    if has_local_labels and has_global_labels:
+        if fallback_intent in {QueryIntent.LOCAL_LOGIC, QueryIntent.TOPOLOGY}:
+            return fallback_intent
+        return QueryIntent.TOPOLOGY
+    if has_local_labels and not has_global_labels:
+        return QueryIntent.LOCAL_LOGIC
+    if has_global_labels:
+        return QueryIntent.TOPOLOGY
+    return fallback_intent
+
+
+def _extract_query_token_mentions(query: str) -> list[EntityMention]:
+    mentions: list[EntityMention] = []
+    seen: set[str] = set()
+
+    for token in _QUERY_TOKEN_RE.findall(query):
+        for normalized in _normalized_query_token_forms(token):
+            if not normalized or normalized in seen:
+                continue
+            if normalized in COMMON_QUERY_STOPWORDS:
+                continue
+            if len(normalized) < 3 or normalized.isdigit():
+                continue
+            seen.add(normalized)
+            label_hints = _LABEL_HINTS_BY_TOKEN.get(normalized, ())
+            if not label_hints:
+                mentions.append(_mention(normalized, preferred_label=None, confidence=0.58))
+            for label in label_hints:
+                mentions.append(_mention(normalized, preferred_label=label, confidence=0.86))
+            if len(seen) >= _MAX_QUERY_TOKEN_MENTIONS:
+                return mentions
+    return mentions
+
+
+def _normalized_query_token_forms(token: str) -> tuple[str, ...]:
+    normalized = normalize_query_token(token)
+    if not normalized:
+        return ()
+    singular = ""
+    if normalized.endswith("s") and not normalized.endswith("ss"):
+        candidate = normalized[:-1]
+        if candidate in _LABEL_HINTS_BY_TOKEN:
+            singular = candidate
+    if singular and singular != normalized:
+        return (normalized, singular)
+    return (normalized,)
+
+
+def _build_label_hints_by_token(seedable_labels: set[str] | frozenset[str]) -> dict[str, tuple[str, ...]]:
+    hints: dict[str, set[str]] = {}
+    for label in seedable_labels:
+        normalized = normalize_query_token(label)
+        if not normalized:
+            continue
+        for token in normalized.split("-"):
+            if len(token) >= 3:
+                hints.setdefault(token, set()).add(label)
+    return {token: tuple(sorted(labels)) for token, labels in hints.items()}
+
+
+_LABEL_HINTS_BY_TOKEN = _build_label_hints_by_token(SEEDABLE_NODE_LABELS)
 
 
 def _mention(text: str, *, preferred_label: str | None, confidence: float) -> EntityMention:
@@ -123,48 +214,6 @@ def _dedupe_mentions(mentions: list[EntityMention]) -> list[EntityMention]:
         best_by_key.values(),
         key=lambda item: (-item.confidence, item.preferred_label or "", item.normalized),
     )
-
-
-def _extract_service_mentions(query: str) -> list[EntityMention]:
-    return [_mention(match, preferred_label=REPO_LABEL, confidence=0.98) for match in _SERVICE_RE.findall(query)]
-
-
-def _extract_repo_token_mentions(query: str) -> list[EntityMention]:
-    mentions: list[EntityMention] = []
-    for token in _REPO_TOKEN_RE.findall(query):
-        if token.lower().endswith(_REPO_SUFFIXES):
-            mentions.append(_mention(token, preferred_label=REPO_LABEL, confidence=0.92))
-    return mentions
-
-
-def _extract_symbol_mentions(query: str) -> list[EntityMention]:
-    mentions: list[EntityMention] = []
-    for token in _SYMBOL_HINT_RE.findall(query):
-        label = COMMAND_LABEL
-        for suffix, mapped_label in _SYMBOL_SUFFIX_TO_LABEL:
-            if token.endswith(suffix):
-                label = mapped_label
-                break
-        mentions.append(_mention(token, preferred_label=label, confidence=0.94))
-    return mentions
-
-
-def _extract_topic_mentions(query: str) -> list[EntityMention]:
-    mentions: list[EntityMention] = []
-    for match in _TOPIC_HINT_RE.findall(query):
-        normalized_match = normalize_query_token(match)
-        if not normalized_match or normalized_match in COMMON_QUERY_STOPWORDS:
-            continue
-        mentions.append(_mention(match, preferred_label=TOPIC_LABEL, confidence=0.92))
-    return mentions
-
-
-def _extract_api_mentions(query: str) -> list[EntityMention]:
-    return [_mention(match, preferred_label=API_LABEL, confidence=0.9) for match in _API_HINT_RE.findall(query)]
-
-
-def _extract_quoted_mentions(query: str) -> list[EntityMention]:
-    return [_mention(match, preferred_label=None, confidence=0.8) for match in _QUOTED_RE.findall(query)]
 
 
 def _build_service_alias_maps(

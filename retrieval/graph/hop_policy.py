@@ -10,18 +10,6 @@ from .config import (
     ESCALATION_NODES_MULTIPLIER,
     ESCALATION_PATHS_MULTIPLIER,
     ESCALATION_CONFIDENCE_THRESHOLD,
-    INITIAL_CONFIG_GLOBAL_NODE_BUDGET,
-    INITIAL_CONFIG_GLOBAL_PATH_BUDGET,
-    INITIAL_CONFIG_MAX_EDGES_PER_NODE,
-    INITIAL_CONFIG_MAX_HOPS,
-    INITIAL_CONFIG_MAX_LATENCY_MS,
-    INITIAL_CONFIG_MAX_NODES_PER_HOP,
-    INITIAL_FLOW_GLOBAL_NODE_BUDGET,
-    INITIAL_FLOW_GLOBAL_PATH_BUDGET,
-    INITIAL_FLOW_MAX_EDGES_PER_NODE,
-    INITIAL_FLOW_MAX_HOPS,
-    INITIAL_FLOW_MAX_LATENCY_MS,
-    INITIAL_FLOW_MAX_NODES_PER_HOP,
     INITIAL_GENERAL_GLOBAL_NODE_BUDGET,
     INITIAL_GENERAL_GLOBAL_PATH_BUDGET,
     INITIAL_GENERAL_MAX_EDGES_PER_NODE,
@@ -47,7 +35,6 @@ from .config import (
     MAX_NODE_CAP,
     STOP_CONFIDENCE_FLOOR,
 )
-from .predicate_catalog import predicate_priority
 from .types import QueryIntent, SeedResolution, StopDecision, TraversalBudget, TraversalPlan, TraversalState
 
 
@@ -69,7 +56,7 @@ def plan_traversal(
 
 
 def initial_budgets(intent: QueryIntent) -> TraversalBudget:
-    if intent == QueryIntent.TOPOLOGY:
+    if _is_global_intent(intent):
         return TraversalBudget(
             max_hops=INITIAL_TOPOLOGY_MAX_HOPS,
             max_nodes_per_hop=INITIAL_TOPOLOGY_MAX_NODES_PER_HOP,
@@ -78,16 +65,7 @@ def initial_budgets(intent: QueryIntent) -> TraversalBudget:
             global_node_budget=INITIAL_TOPOLOGY_GLOBAL_NODE_BUDGET,
             max_latency_ms=INITIAL_TOPOLOGY_MAX_LATENCY_MS,
         )
-    if intent in (QueryIntent.FLOW, QueryIntent.LOCAL_LOGIC):
-        if intent == QueryIntent.FLOW:
-            return TraversalBudget(
-                max_hops=INITIAL_FLOW_MAX_HOPS,
-                max_nodes_per_hop=INITIAL_FLOW_MAX_NODES_PER_HOP,
-                max_edges_per_node=INITIAL_FLOW_MAX_EDGES_PER_NODE,
-                global_path_budget=INITIAL_FLOW_GLOBAL_PATH_BUDGET,
-                global_node_budget=INITIAL_FLOW_GLOBAL_NODE_BUDGET,
-                max_latency_ms=INITIAL_FLOW_MAX_LATENCY_MS,
-            )
+    if _is_local_intent(intent):
         return TraversalBudget(
             max_hops=INITIAL_LOCAL_MAX_HOPS,
             max_nodes_per_hop=INITIAL_LOCAL_MAX_NODES_PER_HOP,
@@ -95,15 +73,6 @@ def initial_budgets(intent: QueryIntent) -> TraversalBudget:
             global_path_budget=INITIAL_LOCAL_GLOBAL_PATH_BUDGET,
             global_node_budget=INITIAL_LOCAL_GLOBAL_NODE_BUDGET,
             max_latency_ms=INITIAL_LOCAL_MAX_LATENCY_MS,
-        )
-    if intent == QueryIntent.CONFIG:
-        return TraversalBudget(
-            max_hops=INITIAL_CONFIG_MAX_HOPS,
-            max_nodes_per_hop=INITIAL_CONFIG_MAX_NODES_PER_HOP,
-            max_edges_per_node=INITIAL_CONFIG_MAX_EDGES_PER_NODE,
-            global_path_budget=INITIAL_CONFIG_GLOBAL_PATH_BUDGET,
-            global_node_budget=INITIAL_CONFIG_GLOBAL_NODE_BUDGET,
-            max_latency_ms=INITIAL_CONFIG_MAX_LATENCY_MS,
         )
     return TraversalBudget(
         max_hops=INITIAL_GENERAL_MAX_HOPS,
@@ -133,9 +102,17 @@ def should_escalate_depth(state: TraversalState, partial_results: list[object]) 
         trigger_count += 1
     if state.newly_added_paths <= max(2, state.target_results // 3):
         trigger_count += 1
-    if state.intent in (QueryIntent.FLOW, QueryIntent.LOCAL_LOGIC) and state.ast_path_count <= 1:
+    if _is_local_intent(state.intent) and state.ast_path_count <= 1:
         trigger_count += 1
     return trigger_count >= 1
+
+
+def _is_local_intent(intent: QueryIntent) -> bool:
+    return intent == QueryIntent.LOCAL_LOGIC
+
+
+def _is_global_intent(intent: QueryIntent) -> bool:
+    return intent == QueryIntent.TOPOLOGY
 
 
 def next_hop_budget(state: TraversalState, partial_results: list[object]) -> TraversalBudget:
@@ -182,12 +159,11 @@ def prune_frontier_rows(
     seed_node_keys: tuple[str, ...],
     budget: TraversalBudget,
 ) -> list[dict]:
-    predicate_priority_map = predicate_priority(intent)
+    del intent
     sorted_rows = sorted(
         rows,
         key=lambda row: (
             int(row.get("hop", 0) or 0),
-            predicate_priority_map.get(str(row.get("predicate", "")), 99),
             -float(row.get("confidence", 0.0) or 0.0),
             str(row.get("subject_key", "")),
             str(row.get("object_key", "")),

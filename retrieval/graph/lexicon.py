@@ -27,10 +27,14 @@ COMMON_QUERY_STOPWORDS: frozenset[str] = frozenset(
         "what",
         "which",
         "with",
+        "many",
+        "each",
+        "service",
+        "services",
+        "implement",
+        "implements",
+        "declare",
+        "declares",
+        "declared",
     }
 )
-
-FLOW_INTENT_TERMS: tuple[str, ...] = ("flow", "path", "emit", "consume", "publish", "call")
-TOPOLOGY_INTENT_TERMS: tuple[str, ...] = ("which services", "across services", "depends on", "dependency")
-CONFIG_INTENT_TERMS: tuple[str, ...] = ("config", "setting", "appsettings")
-LOCAL_INTENT_TERMS: tuple[str, ...] = ("inside", "within", "handler", "command", "event")

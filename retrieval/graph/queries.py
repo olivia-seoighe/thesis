@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from .config import GRAPH_NAME, SEED_LOOKUP_LIMIT
-from .predicate_catalog import allowed_predicates, preferred_predicates
+from .predicate_catalog import allowed_predicates
 from .types import CypherSpec, EntityMention, QueryIntent
 
 
@@ -49,6 +49,40 @@ def build_seed_lookup_query(seed: EntityMention) -> CypherSpec:
     return CypherSpec(query=sql, args=(params,))
 
 
+def build_label_seed_lookup_query(*, label: str) -> CypherSpec:
+    sql = f"""
+        WITH graph_hits AS (
+            SELECT
+                TRIM(BOTH '"' FROM node_key::text) AS node_key,
+                TRIM(BOTH '"' FROM node_label::text) AS node_label,
+                TRIM(BOTH '"' FROM node_name::text) AS node_name
+            FROM ag_catalog.cypher('{GRAPH_NAME}', $$
+                MATCH (n)
+                WHERE n.label = $label
+                RETURN n.node_key AS node_key, n.label AS node_label, n.name AS node_name
+                LIMIT toInteger($limit)
+            $$, $1::ag_catalog.agtype) AS (node_key ag_catalog.agtype, node_label ag_catalog.agtype, node_name ag_catalog.agtype)
+        )
+        SELECT
+            gh.node_key,
+            gh.node_label,
+            gh.node_name,
+            COALESCE(MAX(gne.confidence), 1.0) AS confidence,
+            COUNT(gne.*)::int AS evidence_count
+        FROM graph_hits gh
+        LEFT JOIN graph_node_evidence gne ON gne.node_key = gh.node_key
+        GROUP BY gh.node_key, gh.node_label, gh.node_name
+        ORDER BY confidence DESC, evidence_count DESC
+    """
+    params = _agtype_param(
+        {
+            "label": label,
+            "limit": SEED_LOOKUP_LIMIT,
+        }
+    )
+    return CypherSpec(query=sql, args=(params,))
+
+
 def build_frontier_expansion_query(
     *,
     intent: QueryIntent,
@@ -56,7 +90,6 @@ def build_frontier_expansion_query(
     edge_limit: int,
 ) -> CypherSpec:
     allowed_predicates_for_intent = allowed_predicates(intent)
-    preferred_predicates_for_intent = preferred_predicates(intent)
     sql = f"""
         WITH frontier_edges AS (
             SELECT
@@ -103,20 +136,18 @@ def build_frontier_expansion_query(
         FROM frontier_edges f
         LEFT JOIN edge_stats es ON es.edge_key = f.edge_key
         ORDER BY
-            COALESCE(array_position($2::text[], f.predicate), 999),
             COALESCE(es.confidence, 1.0) DESC,
             f.subject_key,
             f.object_key
-        LIMIT $3
+        LIMIT $2
     """
     params = _agtype_param(
         {
             "frontier_node_keys": frontier_node_keys,
             "allowed_predicates": allowed_predicates_for_intent,
-            "edge_limit": edge_limit,
         }
     )
-    return CypherSpec(query=sql, args=(params, preferred_predicates_for_intent, edge_limit))
+    return CypherSpec(query=sql, args=(params, edge_limit))
 
 
 def build_evidence_query(node_or_edge_ids: list[str]) -> CypherSpec:

@@ -17,7 +17,6 @@ from .config import (
     RANK_TOPOLOGY_MESSAGING_DOC_BONUS,
 )
 from .lexicon import COMMON_QUERY_STOPWORDS
-from .predicate_catalog import relation_weights
 from .types import EvidenceBundle, GraphPath, NodeCandidate, QueryIntent, RankedChunk, RankingContext
 
 
@@ -148,15 +147,13 @@ def compute_ranking_policy(
 def _intent_tier_multiplier(intent: QueryIntent, tiers: set[str]) -> float:
     has_ast = "AST_LOCAL" in tiers
     has_contract = "CONTRACT_GLOBAL" in tiers
-    if intent in {QueryIntent.LOCAL_LOGIC, QueryIntent.FLOW}:
+    if intent == QueryIntent.LOCAL_LOGIC:
         if has_ast and has_contract:
             return 1.08
         if has_ast:
             return 1.05
         if has_contract:
             return 0.78
-    if intent == QueryIntent.CONFIG and has_contract:
-        return 1.06
     if intent == QueryIntent.TOPOLOGY:
         if has_contract:
             return 1.08
@@ -168,7 +165,7 @@ def _intent_tier_multiplier(intent: QueryIntent, tiers: set[str]) -> float:
 def _anti_skew_multiplier(intent: QueryIntent, tiers: set[str]) -> float:
     has_ast = "AST_LOCAL" in tiers
     has_contract = "CONTRACT_GLOBAL" in tiers
-    if intent in {QueryIntent.LOCAL_LOGIC, QueryIntent.FLOW} and has_contract and not has_ast:
+    if intent == QueryIntent.LOCAL_LOGIC and has_contract and not has_ast:
         return 0.82
     if intent == QueryIntent.TOPOLOGY and has_ast and not has_contract:
         return 0.8
@@ -218,7 +215,7 @@ def aggregate_to_chunks(
 def _relation_weight(predicates: tuple[str, ...], context: RankingContext) -> float:
     if not predicates:
         return 1.0
-    effective_weights = context.relation_weights or relation_weights(context.intent)
+    effective_weights = context.relation_weights
     weights = [effective_weights.get(predicate, 1.0) for predicate in predicates]
     return sum(weights) / len(weights)
 
