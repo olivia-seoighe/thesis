@@ -9,8 +9,14 @@ _retrieval_host_port = os.getenv("RETRIEVAL_HOST_PORT", "18000")
 DEFAULT_RETRIEVAL_URL = os.getenv(
 	"RETRIEVAL_URL", f"http://localhost:{_retrieval_host_port}"
 )
-DEFAULT_STRATEGIES = ("keyword", "vector", "hybrid")
-DEFAULT_K_VALUES = (5, 10)
+DEFAULT_STRATEGIES = (
+    "graph-service-aware",
+    "hybrid",
+    "hybrid-service-aware",
+    "keyword-service-aware",
+    "vector-service-aware",
+)
+DEFAULT_K_VALUES = (10, 15)
 DEFAULT_TIMEOUT_SECONDS = int(os.getenv("EVAL_HTTP_TIMEOUT_SECONDS", "60"))
 
 ROOT_DIR = Path(__file__).resolve().parents[2]

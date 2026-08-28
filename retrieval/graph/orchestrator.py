@@ -13,7 +13,7 @@ from .config import (
     RANK_DECAY_ADAPTIVE_ESCALATED,
     RANK_DECAY_FIXED,
 )
-from .entity_linker import build_seed_candidates, expand_aliases, extract_mentions
+from .entity_linker import build_query_seed_mentions, build_seed_candidates, infer_intent_from_seed_labels
 from .hop_policy import next_hop_budget, plan_traversal, prune_frontier_rows, should_escalate_depth, should_stop
 from .queries import build_evidence_query, build_frontier_expansion_query
 from .ranker import aggregate_to_chunks, extract_query_terms
@@ -52,10 +52,9 @@ class GraphClient:
         seed_start = time.time()
         policy_mode = self._normalize_hop_policy_mode(hop_policy_mode)
 
-        mentions = extract_mentions(request.query)
-        mentions = expand_aliases(mentions, self._service_aliases, request.query)
+        query_for_seeding, mentions = build_query_seed_mentions(request.query, self._service_aliases)
         seed_request = build_seed_candidates(
-            request.query,
+            query_for_seeding,
             mentions,
             source_filters=request.sources,
         )
@@ -69,8 +68,25 @@ class GraphClient:
             )
             return self._empty_response(request=request, start_time=start_time)
 
+        resolved_seed_labels = {match.node.node_label for match in seed_resolution.matches}
+        effective_intent = infer_intent_from_seed_labels(
+            resolved_seed_labels,
+            fallback_intent=seed_request.intent,
+        )
+        if effective_intent != seed_request.intent:
+            logger.info(
+                "Graph intent reclassified from resolved seed labels",
+                extra={
+                    "graph_traversal_meta": {
+                        "initial_intent": seed_request.intent,
+                        "effective_intent": effective_intent,
+                        "resolved_seed_labels": sorted(resolved_seed_labels),
+                    }
+                },
+            )
+
         traversal = plan_traversal(
-            seed_request.intent,
+            effective_intent,
             seed_resolution,
             request.query,
             target_results=request.top_k,
@@ -96,20 +112,25 @@ class GraphClient:
         candidates = self._build_candidates(
             evidence_rows,
             request.sources,
-            intent=traversal.intent,
-            seed_node_keys={match.node.node_key for match in seed_resolution.matches},
+            intent=effective_intent,
+            seed_node_labels={match.node.node_label for match in seed_resolution.matches},
+            mention_label_hints={mention.preferred_label for mention in seed_request.mentions if mention.preferred_label},
         )
         if not candidates:
             logger.info("Graph search produced no ranked candidates", extra={"graph_traversal_meta": traversal_meta.__dict__})
             return self._empty_response(request=request, start_time=start_time)
 
         path_mapping = self._build_path_mapping(neighborhood_rows, seed_resolution.matches)
+        candidate_pool_size = request.top_k
+        if effective_intent == QueryIntent.TOPOLOGY:
+            candidate_pool_size = min(200, max(request.top_k * 6, request.top_k))
+
         ranked = aggregate_to_chunks(
             candidates,
             path_mapping,
-            request.top_k,
+            candidate_pool_size,
             RankingContext(
-                intent=seed_request.intent,
+                intent=effective_intent,
                 decay_lambda=self._decay_lambda_for_mode(
                     hop_policy_mode=policy_mode,
                     escalation_count=traversal_meta.escalation_count,
@@ -117,6 +138,8 @@ class GraphClient:
                 query_terms=extract_query_terms(request.query),
             ),
         )
+        if effective_intent == QueryIntent.TOPOLOGY:
+            ranked = self._apply_service_diversity(ranked, request.top_k, strict=True)
         ranked = self._apply_document_diversity(ranked, request.max_chunks_per_document)
         ranking_ms = (time.time() - ranking_start) * 1000
         total_ms = (time.time() - start_time) * 1000
@@ -355,33 +378,23 @@ class GraphClient:
         source_filters: list[str],
         *,
         intent: QueryIntent,
-        seed_node_keys: set[str],
+        seed_node_labels: set[str],
+        mention_label_hints: set[str],
     ) -> list[NodeCandidate]:
         source_filter_set = {value.lower() for value in source_filters}
         candidates: list[NodeCandidate] = []
+        code_focused_labels = {"SAGA", "HANDLER", "COMMAND", "EVENT"} & seed_node_labels
+        explicit_code_focus_labels = code_focused_labels & mention_label_hints
+        code_focused_local = intent == QueryIntent.LOCAL_LOGIC and bool(explicit_code_focus_labels)
+        allowed_code_focused_labels = explicit_code_focus_labels
 
         for row in rows:
             source = str(row["source"] or "")
             if source_filter_set and source.lower() not in source_filter_set:
                 continue
-            title = str(row["document_title"] or "").lower()
-            if intent == QueryIntent.TOPOLOGY and "servicecollectionextensions.cs" in title:
+            node_label = str(row["node_label"])
+            if intent == QueryIntent.LOCAL_LOGIC and code_focused_local and node_label not in allowed_code_focused_labels:
                 continue
-            if intent == QueryIntent.TOPOLOGY and not any(
-                token in title for token in ("appsettings", "servicecollection", "asyncapi", "configmap")
-            ):
-                continue
-            if (
-                intent == QueryIntent.TOPOLOGY
-                and str(row["node_label"]) == "REPO"
-                and str(row["node_key"]) in seed_node_keys
-            ):
-                keep_for_seed_topology = (
-                    title.endswith("/appsettings.json")
-                    or "servicecollection.cs" in title
-                )
-                if not keep_for_seed_topology:
-                    continue
 
             evidence = EvidenceBundle(
                 evidence_count=int(row["evidence_count"]),
@@ -472,6 +485,86 @@ class GraphClient:
             per_doc[chunk.document_id] = count + 1
             filtered.append(chunk)
         return filtered
+
+    @staticmethod
+    def _apply_service_diversity(
+        ranked: list[RankedChunk],
+        top_k: int,
+        *,
+        strict: bool = False,
+    ) -> list[RankedChunk]:
+        if top_k <= 1:
+            return ranked
+        selected: list[RankedChunk] = []
+        seen_buckets: set[str] = set()
+
+        service_ranked = [chunk for chunk in ranked if GraphClient._service_bucket(chunk.document_title).startswith("src:")]
+        other_ranked = [chunk for chunk in ranked if not GraphClient._service_bucket(chunk.document_title).startswith("src:")]
+
+        for chunk in service_ranked:
+            bucket = GraphClient._service_bucket(chunk.document_title)
+            if bucket in seen_buckets:
+                continue
+            selected.append(chunk)
+            seen_buckets.add(bucket)
+            if len(selected) >= top_k:
+                return selected
+
+        if strict and selected:
+            return selected
+
+        for chunk in other_ranked:
+            bucket = GraphClient._service_bucket(chunk.document_title)
+            if bucket in seen_buckets:
+                continue
+            selected.append(chunk)
+            seen_buckets.add(bucket)
+            if len(selected) >= top_k:
+                return selected
+
+        if strict:
+            return selected
+
+        if len(selected) >= top_k:
+            return selected
+
+        selected_ids = {chunk.chunk_id for chunk in selected}
+        for chunk in ranked:
+            if chunk.chunk_id in selected_ids:
+                continue
+            selected.append(chunk)
+            if len(selected) >= top_k:
+                break
+        return selected
+
+    @staticmethod
+    def _service_bucket(document_title: str) -> str:
+        title = (document_title or "").strip().lower()
+        if not title:
+            return "unknown"
+        parts = title.split("/")
+        if len(parts) >= 2 and parts[0] == "src":
+            return f"src:{GraphClient._normalize_service_folder(parts[1])}"
+        if parts[0] == "k8s":
+            return "k8s"
+        return f"path:{title}"
+
+    @staticmethod
+    def _normalize_service_folder(folder: str) -> str:
+        tokens = [token for token in folder.lower().split(".") if token]
+        suffix_tokens = {
+            "api",
+            "core",
+            "di",
+            "messages",
+            "service",
+            "svc",
+            "webapi",
+            "worker",
+        }
+        while len(tokens) > 1 and tokens[-1] in suffix_tokens:
+            tokens.pop()
+        return ".".join(tokens) if tokens else folder.lower()
 
     def _load_service_aliases(self, service_catalogue_path: Path | None) -> list[tuple[str, list[str]]]:
         catalogue_path = service_catalogue_path or (Path(__file__).resolve().parents[2] / "service_acronyms.json")
@@ -602,7 +695,7 @@ class GraphClient:
             reasons.append("low_frontier_width")
         if state.newly_added_paths <= max(1, state.target_results // 5):
             reasons.append("low_marginal_gain")
-        if state.intent in (QueryIntent.FLOW, QueryIntent.LOCAL_LOGIC) and state.ast_path_count == 0:
+        if state.intent == QueryIntent.LOCAL_LOGIC and state.ast_path_count == 0:
             reasons.append("missing_ast_paths")
         if not reasons:
             reasons.append("generic_escalation")

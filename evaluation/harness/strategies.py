@@ -54,9 +54,9 @@ class StrategyRunner:
         }
         if sources:
             params["source"] = ",".join(sources)
-        if strategy == "graph-fixed":
+        if strategy in {"graph", "graph-fixed"}:
             params["hop_policy"] = "fixed"
-        elif strategy in {"graph", "graph-adaptive"}:
+        elif strategy == "graph-adaptive":
             params["hop_policy"] = "adaptive"
 
         url = f"{self.base_url}{endpoint}?{urlencode(params)}"
