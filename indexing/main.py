@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from indexing.chunker.document_chunker import DocumentChunker
 from indexing.clients.embedding_client import EmbeddingClient
 from indexing.connection_manager import ConnectionManager
+from indexing.graph import GraphExtractor, GraphIndexer
 from indexing.indexer.postgres_indexer import PostgresIndexer
 from indexing.models.document import Document
 
@@ -123,6 +124,25 @@ def build_document(file_entry: dict, source: str) -> Document:
     )
 
 
+def _graph_extraction_priority(file_path: str) -> int:
+    path = (file_path or "").lower()
+    if "asyncapi" in path:
+        return 0
+    if "schema_state_" in path:
+        return 1
+    if "configmap" in path:
+        return 2
+    if path.endswith(".cs"):
+        return 3
+    if path.endswith("appsettings.prod.json"):
+        return 4
+    if path.endswith("appsettings.json"):
+        return 5
+    if "ingress" in path:
+        return 6
+    return 10
+
+
 def _get_summary_files() -> list[Path]:
     """Return the summaries.json files to ingest.
 
@@ -154,15 +174,28 @@ def _get_source(data: dict, summaries_file: Path) -> str:
 
 async def main() -> None:
     skip_unchanged = os.getenv("SKIP_UNCHANGED", "false").lower() == "true"
+    graph_indexing_enabled = os.getenv("GRAPH_INDEXING_ENABLED", "true").lower() == "true"
+    graph_only = os.getenv("GRAPH_ONLY", "false").lower() == "true"
     summary_files = _get_summary_files()
 
     db = ConnectionManager()
-    embedder = EmbeddingClient()
-    indexer = PostgresIndexer(db)
-    chunk_size = int(os.getenv("CHUNK_SIZE", "1500"))
-    overlap_ratio = float(os.getenv("CHUNK_OVERLAP", "0.15"))
-    chunker = DocumentChunker(chunk_size=chunk_size, overlap_ratio=overlap_ratio)
-    logger.info(f"Chunker: chunk_size={chunk_size} words, overlap_ratio={overlap_ratio}")
+    embedder: EmbeddingClient | None = None
+    indexer: PostgresIndexer | None = None
+    chunker: DocumentChunker | None = None
+    if not graph_only:
+        embedder = EmbeddingClient()
+        indexer = PostgresIndexer(db)
+        chunk_size = int(os.getenv("CHUNK_SIZE", "1500"))
+        overlap_ratio = float(os.getenv("CHUNK_OVERLAP", "0.15"))
+        chunker = DocumentChunker(chunk_size=chunk_size, overlap_ratio=overlap_ratio)
+        logger.info(f"Chunker: chunk_size={chunk_size} words, overlap_ratio={overlap_ratio}")
+    elif not graph_indexing_enabled:
+        raise ValueError("GRAPH_ONLY=true requires GRAPH_INDEXING_ENABLED=true")
+
+    graph_extractor = GraphExtractor()
+    graph_indexer = GraphIndexer(db)
+    logger.info(f"Graph-only mode: {graph_only}")
+    logger.info(f"Graph indexing enabled: {graph_indexing_enabled}")
 
     try:
         for summaries_file in summary_files:
@@ -170,22 +203,57 @@ async def main() -> None:
                 data = json.load(f)
 
             files = data.get("files", [])
+            files = sorted(
+                files,
+                key=lambda file_entry: _graph_extraction_priority(
+                    str(file_entry.get("file_path", ""))
+                ),
+            )
             source = _get_source(data, summaries_file)
             logger.info(f"Loaded {len(files)} files from {summaries_file} (source={source})")
+            graph_extractor.register_repo_files(
+                source,
+                [str(file_entry.get("file_path", "")) for file_entry in files],
+            )
+            if graph_indexing_enabled:
+                await graph_indexer.upsert_service_node(source)
 
             for i, file_entry in enumerate(files, start=1):
                 doc = build_document(file_entry, source)
+
+                if graph_indexing_enabled:
+                    triples = graph_extractor.extract(
+                        summary=file_entry.get("summary", ""),
+                        document_title=file_entry.get("file_path", ""),
+                        service=source,
+                        source_code=file_entry.get("source_code", ""),
+                    )
+                    if triples:
+                        for triple in triples:
+                            triple.properties.setdefault("document_id", doc.id)
+                        await graph_indexer.upsert(triples)
+                        logger.debug(
+                            f"[{i}/{len(files)}] {doc.title} → {len(triples)} graph triple(s)"
+                        )
+
+                if graph_only:
+                    continue
+
                 if not doc.text.strip():
                     logger.warning(f"Skipping empty summary: {doc.title}")
                     continue
 
                 if skip_unchanged:
+                    if indexer is None:
+                        raise RuntimeError("Vector indexer is not initialized")
                     last_indexed_at = await indexer.get_last_indexed_at(doc.id)
                     last_modified = _parse_iso_datetime(doc.last_modified_date)
                     if last_indexed_at and last_modified and _is_unchanged(last_modified, last_indexed_at):
                         logger.info(f"[{i}/{len(files)}] Skipping unchanged: {doc.title}")
                         continue
 
+                if chunker is None or embedder is None or indexer is None:
+                    raise RuntimeError("Vector indexing dependencies are not initialized")
                 chunks = chunker.chunk(doc)
                 embedded_chunks = await embedder.embed_chunks(chunks)
                 await indexer.replace_document(doc, embedded_chunks)
@@ -195,7 +263,8 @@ async def main() -> None:
         logger.info("Ingest complete.")
     finally:
         await db.close()
-        await embedder.close()
+        if embedder is not None:
+            await embedder.close()
 
 
 if __name__ == "__main__":
