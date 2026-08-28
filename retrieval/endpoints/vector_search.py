@@ -1,7 +1,7 @@
 from typing import List
 
-from clients.search_factory import SearchClientFactory
-from models.models import SearchRequest, SearchResponse
+from retrieval.clients.search_factory import SearchClientFactory
+from retrieval.models.models import SearchRequest, SearchResponse
 
 
 class VectorSearchEndpoint:

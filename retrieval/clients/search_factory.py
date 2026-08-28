@@ -1,7 +1,8 @@
 import logging
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from clients.search_client import SearchClient
+if TYPE_CHECKING:
+    from retrieval.clients.search_client import SearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,9 @@ class SearchClientFactory:
         min_size: int = 2,
         max_size: int = 5,
         **pool_kwargs: Any,
-    ) -> SearchClient:
+    ) -> "SearchClient":
+        from retrieval.clients.search_client import SearchClient
+
         logger.info("Creating SearchClient")
         return SearchClient(
             host=host,

@@ -3,6 +3,7 @@ import os
 import sys
 import uuid
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Optional
 
 request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
@@ -40,6 +41,7 @@ class ServiceAdapter(logging.LoggerAdapter):
 
 def setup_logging() -> logging.Logger:
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_file_path = os.getenv("LOG_FILE_PATH", "logs/retrieval.log")
 
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
@@ -52,6 +54,12 @@ def setup_logging() -> logging.Logger:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
     root.addHandler(handler)
+
+    file_path = Path(log_file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(file_path, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
 
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)

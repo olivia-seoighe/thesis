@@ -4,19 +4,28 @@ from typing import List
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from endpoints.hybrid_search import HybridSearchEndpoint
-from endpoints.keyword_search import KeywordSearchEndpoint
-from endpoints.vector_search import VectorSearchEndpoint
-from models.models import SearchRequest, SearchResponse
-from utils.logging_config import get_logger, get_request_id
+from retrieval.endpoints.graph_search import GraphSearchEndpoint
+from retrieval.endpoints.hybrid_search import HybridSearchEndpoint
+from retrieval.endpoints.keyword_search import KeywordSearchEndpoint
+from retrieval.endpoints.vector_search import VectorSearchEndpoint
+from retrieval.models.models import SearchRequest, SearchResponse
+from retrieval.utils.logging_config import get_logger, get_request_id
 
 load_dotenv()
 
 BUILD_TIMESTAMP = os.getenv("BUILD_TIMESTAMP", "unknown")
 GIT_COMMIT = os.getenv("GIT_COMMIT", "unknown")
+QUERY_PARAM_DESCRIPTION = "The query to search for"
+TOP_K_PARAM_DESCRIPTION = "Number of results to return"
+SOURCE_PARAM_DESCRIPTION = (
+    "Source filter(s). Single source or comma-separated list. Omit to search all sources."
+)
 
 vector_search_endpoint = VectorSearchEndpoint()
 keyword_search_endpoint = KeywordSearchEndpoint(
+    search_client=vector_search_endpoint.search_client
+)
+graph_search_endpoint = GraphSearchEndpoint(
     search_client=vector_search_endpoint.search_client
 )
 hybrid_search_endpoint = HybridSearchEndpoint(
@@ -27,14 +36,22 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _parse_sources_param(source: str | None) -> list[str]:
+    return [value.strip() for value in source.split(",")] if source else []
+
+
+def _results_count(results: list[SearchResponse]) -> int:
+    return sum(len(item.chunks) for item in results)
+
+
 @router.get("/search/vector", response_model=List[SearchResponse])
 async def search_vector(
     request: Request,
-    query: str = Query(..., description="The query to search for"),
-    top_k: int = Query(10, description="Number of results to return"),
+    query: str = Query(..., description=QUERY_PARAM_DESCRIPTION),
+    top_k: int = Query(10, description=TOP_K_PARAM_DESCRIPTION),
     source: str | None = Query(
         None,
-        description="Source filter(s). Single source or comma-separated list. Omit to search all sources.",
+        description=SOURCE_PARAM_DESCRIPTION,
     ),
     entity_filter: str | None = Query(
         None,
@@ -54,14 +71,14 @@ async def search_vector(
         },
     )
     try:
-        sources = [s.strip() for s in source.split(",")] if source else []
+        sources = _parse_sources_param(source)
         search_request = SearchRequest(
             query=query, top_k=top_k, sources=sources, entity_filter=entity_filter
         )
         results = await vector_search_endpoint.run(search_request)
         logger.info(
             "Search completed",
-            extra={"search": {"results_count": sum(len(r.chunks) for r in results)}},
+            extra={"search": {"results_count": _results_count(results)}},
         )
         return results
     except Exception as e:
@@ -76,11 +93,11 @@ async def search_vector(
 @router.get("/search/keyword", response_model=List[SearchResponse])
 async def search_keyword(
     request: Request,
-    query: str = Query(..., description="The query to search for"),
-    top_k: int = Query(10, description="Number of results to return"),
+    query: str = Query(..., description=QUERY_PARAM_DESCRIPTION),
+    top_k: int = Query(10, description=TOP_K_PARAM_DESCRIPTION),
     source: str | None = Query(
         None,
-        description="Source filter(s). Single source or comma-separated list. Omit to search all sources.",
+        description=SOURCE_PARAM_DESCRIPTION,
     ),
     match_all: bool = Query(
         False,
@@ -105,7 +122,7 @@ async def search_keyword(
         },
     )
     try:
-        sources = [s.strip() for s in source.split(",")] if source else []
+        sources = _parse_sources_param(source)
         search_request = SearchRequest(
             query=query,
             top_k=top_k,
@@ -116,7 +133,7 @@ async def search_keyword(
         results = await keyword_search_endpoint.run(search_request)
         logger.info(
             "Search completed",
-            extra={"search": {"results_count": sum(len(r.chunks) for r in results)}},
+            extra={"search": {"results_count": _results_count(results)}},
         )
         return results
     except Exception as e:
@@ -131,11 +148,11 @@ async def search_keyword(
 @router.get("/search/hybrid", response_model=List[SearchResponse])
 async def search_hybrid(
     request: Request,
-    query: str = Query(..., description="The query to search for"),
-    top_k: int = Query(10, description="Number of results to return"),
+    query: str = Query(..., description=QUERY_PARAM_DESCRIPTION),
+    top_k: int = Query(10, description=TOP_K_PARAM_DESCRIPTION),
     source: str | None = Query(
         None,
-        description="Source filter(s). Single source or comma-separated list. Omit to search all sources.",
+        description=SOURCE_PARAM_DESCRIPTION,
     ),
 ):
     logger.info(
@@ -143,17 +160,56 @@ async def search_hybrid(
         extra={"search": {"query": query, "top_k": top_k, "source": source}},
     )
     try:
-        sources = [s.strip() for s in source.split(",")] if source else []
+        sources = _parse_sources_param(source)
         search_request = SearchRequest(query=query, top_k=top_k, sources=sources)
         results = await hybrid_search_endpoint.run(search_request)
         logger.info(
             "Hybrid search completed",
-            extra={"search": {"results_count": sum(len(r.chunks) for r in results)}},
+            extra={"search": {"results_count": _results_count(results)}},
         )
         return results
     except Exception as e:
         logger.error(
             "Hybrid search failed",
+            extra={"error": {"type": type(e).__name__, "message": str(e)}},
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/search/graph", response_model=List[SearchResponse])
+async def search_graph(
+    request: Request,
+    query: str = Query(..., description=QUERY_PARAM_DESCRIPTION),
+    top_k: int = Query(10, description=TOP_K_PARAM_DESCRIPTION),
+    source: str | None = Query(
+        None,
+        description=SOURCE_PARAM_DESCRIPTION,
+    ),
+    hop_policy: str = Query(
+        "adaptive",
+        description="Graph hop policy mode: adaptive (default) or fixed.",
+    ),
+):
+    logger.info(
+        "Processing graph search request",
+        extra={"search": {"query": query, "top_k": top_k, "source": source, "hop_policy": hop_policy}},
+    )
+    try:
+        sources = _parse_sources_param(source)
+        search_request = SearchRequest(query=query, top_k=top_k, sources=sources)
+        results = await graph_search_endpoint.run(
+            search_request,
+            hop_policy_mode=hop_policy,
+        )
+        logger.info(
+            "Graph search completed",
+            extra={"search": {"results_count": _results_count(results)}},
+        )
+        return results
+    except Exception as e:
+        logger.error(
+            "Graph search failed",
             extra={"error": {"type": type(e).__name__, "message": str(e)}},
             exc_info=True,
         )
@@ -178,6 +234,7 @@ async def version() -> dict:
             "entity_filter": True,
             "cross_chunk_match_all": True,
             "document_diversity": True,
+            "graph_search": True,
         },
     }
 
