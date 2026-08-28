@@ -11,9 +11,9 @@ from typing import Any, List, Optional
 
 import asyncpg
 
-from clients.embedding_client import EmbeddingAPIClient
-from models.models import RetrievedChunk, SearchRequest, SearchResponse
-from utils.logging_config import get_logger
+from retrieval.clients.embedding_client import EmbeddingAPIClient
+from retrieval.models.models import RetrievedChunk, SearchRequest, SearchResponse
+from retrieval.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -31,7 +31,7 @@ def _term_to_tsquery(term: str) -> str:
     return safe_term
 
 
- # Preserve hyphenated identifiers (e.g.,service names like uacr-service)
+# Preserve hyphenated identifiers (e.g., service IDs like order-service).
 _TSQUERY_TOKEN = re.compile(r"\w+(?:-\w+)*")
 def _sanitize_terms(query: str) -> list[str]:
     return _TSQUERY_TOKEN.findall(query)
@@ -104,6 +104,8 @@ class SearchClient:
         commands. Using the pool's setup callback guarantees hnsw.ef_search
         is always applied before a query runs.
         """
+        await conn.execute("LOAD 'age';")
+        await conn.execute('SET search_path = ag_catalog, "$user", public;')
         await conn.execute(f"SET hnsw.ef_search = {self.hnsw_ef_search};")
 
     async def get_pool(self) -> asyncpg.Pool:

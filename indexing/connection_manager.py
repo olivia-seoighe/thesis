@@ -53,6 +53,11 @@ class ConnectionManager:
             schema="pg_catalog",
             format="text",
         )
+        await self._prepare_age_session(conn)
+
+    async def _prepare_age_session(self, conn: asyncpg.Connection) -> None:
+        await conn.execute("LOAD 'age';")
+        await conn.execute('SET search_path = ag_catalog, "$user", public;')
 
     async def get_pool(self) -> asyncpg.Pool:
         current_loop = asyncio.get_running_loop()
@@ -85,26 +90,31 @@ class ConnectionManager:
     async def execute(self, query: str, *args: Any) -> str:
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            await self._prepare_age_session(conn)
             return await conn.execute(query, *args)
 
     async def fetch(self, query: str, *args: Any) -> list[asyncpg.Record]:
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            await self._prepare_age_session(conn)
             return await conn.fetch(query, *args)
 
     async def fetchval(self, query: str, *args: Any) -> Any:
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            await self._prepare_age_session(conn)
             return await conn.fetchval(query, *args)
 
     async def fetchrow(self, query: str, *args: Any) -> Optional[asyncpg.Record]:
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            await self._prepare_age_session(conn)
             return await conn.fetchrow(query, *args)
 
     async def executemany(self, query: str, args: list[tuple]) -> None:
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            await self._prepare_age_session(conn)
             await conn.executemany(query, args)
 
     async def close(self) -> None:
