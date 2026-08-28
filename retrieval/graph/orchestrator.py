@@ -86,9 +86,9 @@ class GraphClient:
             )
 
         traversal = plan_traversal(
-            effective_intent,
-            seed_resolution,
-            request.query,
+            intent=effective_intent,
+            seed_resolution=seed_resolution,
+            query=request.query,
             target_results=request.top_k,
         )
         traversal_result = await self._traverse_with_policy(
