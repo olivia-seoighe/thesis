@@ -15,9 +15,9 @@ from typing import Callable
 
 from indexing.graph.config import (
     CONTRACT_API_CONFIDENCE,
+    CONTRACT_CSPROJ_METADATA_CONFIDENCE,
     CONTRACT_EXPOSES_API_CONFIDENCE,
     CONTRACT_FLAG_CONFIDENCE,
-    CONTRACT_DOTNET_PROJECT_CONFIDENCE,
     CONTRACT_TABLE_CONFIDENCE,
     CONTRACT_TOPIC_CONFIDENCE,
     SOURCE_PRIORITY_APPSETTINGS_BASE,
@@ -147,35 +147,25 @@ class ContractGlobalExtractor:
         )
 
         if source_kind == SOURCE_KIND_CSPROJ:
-            project_node = clean_graph_text(document_title)
-            if project_node:
+            target_frameworks, package_refs = self._extract_csproj_metadata(source_code)
+            for framework in target_frameworks:
                 add_triple(
                     subject=repo_name,
                     subject_label="REPO",
-                    predicate="OWNS_PROJECT",
-                    obj=project_node,
-                    object_label="DOTNET_PROJECT",
-                    confidence=CONTRACT_DOTNET_PROJECT_CONFIDENCE,
+                    predicate="TARGETS_FRAMEWORK",
+                    obj=framework,
+                    object_label="FRAMEWORK",
+                    confidence=CONTRACT_CSPROJ_METADATA_CONFIDENCE,
                 )
-                target_frameworks, package_refs = self._extract_csproj_metadata(source_code)
-                for target_framework in target_frameworks:
-                    add_triple(
-                        subject=project_node,
-                        subject_label="DOTNET_PROJECT",
-                        predicate="TARGETS_FRAMEWORK",
-                        obj=target_framework,
-                        object_label="TARGET_FRAMEWORK",
-                        confidence=CONTRACT_DOTNET_PROJECT_CONFIDENCE,
-                    )
-                for package_name in package_refs:
-                    add_triple(
-                        subject=project_node,
-                        subject_label="DOTNET_PROJECT",
-                        predicate="REFERENCES_PACKAGE",
-                        obj=package_name,
-                        object_label="NUGET_PACKAGE",
-                        confidence=CONTRACT_DOTNET_PROJECT_CONFIDENCE,
-                    )
+            for package_name in package_refs:
+                add_triple(
+                    subject=repo_name,
+                    subject_label="REPO",
+                    predicate="CONTAINS_PACKAGE",
+                    obj=package_name,
+                    object_label="NUGET_PACKAGE",
+                    confidence=CONTRACT_CSPROJ_METADATA_CONFIDENCE,
+                )
             return triples
 
         for topic in self._extract_topic_values(

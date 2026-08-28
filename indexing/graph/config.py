@@ -36,9 +36,9 @@ CONTRACT_EXPOSES_API_CONFIDENCE: Final[float] = float(
 CONTRACT_TABLE_CONFIDENCE: Final[float] = float(
     os.getenv("GRAPH_CONTRACT_TABLE_CONFIDENCE", "0.96")
 )  # Schema-state tables are authoritative DDL-level entities for table ownership.
-CONTRACT_DOTNET_PROJECT_CONFIDENCE: Final[float] = float(
-    os.getenv("GRAPH_CONTRACT_DOTNET_PROJECT_CONFIDENCE", "0.96")
-)  # .csproj declarations are authoritative for project/framework/package metadata.
+CONTRACT_CSPROJ_METADATA_CONFIDENCE: Final[float] = float(
+    os.getenv("GRAPH_CONTRACT_CSPROJ_METADATA_CONFIDENCE", "0.96")
+)  # .csproj declarations are authoritative for framework/package metadata.
 
 SOURCE_PRIORITY_ASYNCAPI: Final[int] = int(os.getenv("GRAPH_SOURCE_PRIORITY_ASYNCAPI", "7"))  # Rank 7: canonical source for message-channel topology.
 SOURCE_PRIORITY_AST: Final[int] = int(os.getenv("GRAPH_SOURCE_PRIORITY_AST", "6"))  # Rank 6: strong local truth for code-level behavior.
