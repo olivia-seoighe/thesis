@@ -29,6 +29,8 @@ class StrategyRunner:
         "vector": "/search/vector",
         "hybrid": "/search/hybrid",
         "graph": "/search/graph",
+        "graph-adaptive": "/search/graph",
+        "graph-fixed": "/search/graph",
     }
 
     def __init__(self, base_url: str, timeout_seconds: int = 60) -> None:
@@ -52,6 +54,10 @@ class StrategyRunner:
         }
         if sources:
             params["source"] = ",".join(sources)
+        if strategy == "graph-fixed":
+            params["hop_policy"] = "fixed"
+        elif strategy in {"graph", "graph-adaptive"}:
+            params["hop_policy"] = "adaptive"
 
         url = f"{self.base_url}{endpoint}?{urlencode(params)}"
         request = Request(url=url, method="GET")
@@ -66,6 +72,10 @@ class StrategyRunner:
         except URLError as exc:
             raise RuntimeError(
                 f"Failed to reach retrieval URL {self.base_url}: {exc.reason}."
+            ) from exc
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out waiting for {url} after {self.timeout_seconds}s."
             ) from exc
 
         return self._extract_chunks(payload)
@@ -84,6 +94,10 @@ class StrategyRunner:
         except URLError as exc:
             raise RuntimeError(
                 f"Failed to reach retrieval URL {self.base_url}: {exc.reason}."
+            ) from exc
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out waiting for {url} after {self.timeout_seconds}s."
             ) from exc
 
         if not isinstance(payload, dict):

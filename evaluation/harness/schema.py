@@ -108,6 +108,13 @@ class EvaluationResultRow:
     retrieved_count: int
     hit_count: int
     error: str
+    graph_escalation_count: int = 0
+    graph_hops_executed: int = 0
+    graph_nodes_visited: int = 0
+    graph_paths_examined: int = 0
+    graph_stop_reason: str = ""
+    graph_total_latency_ms: float = 0.0
+    latency_ms: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

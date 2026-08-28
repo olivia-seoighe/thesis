@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
         default=",".join(DEFAULT_STRATEGIES),
         help=(
             "Comma-separated strategies. Base: keyword,vector,hybrid,graph. "
+            "Graph variants: graph-adaptive, graph-fixed. "
             "Service-aware variant: append -service-aware (e.g. vector-service-aware)."
         ),
     )

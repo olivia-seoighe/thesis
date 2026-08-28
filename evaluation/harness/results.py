@@ -32,16 +32,18 @@ class RunWriter:
         )
 
     def _write_results_workbook(self, path: Path, results_rows: list[dict[str, Any]]) -> None:
+        normalized_rows = [self._normalize_result_row(row) for row in results_rows]
+
         workbook = Workbook()
         results_sheet = workbook.active
         results_sheet.title = "results"
-        self._write_sheet(results_sheet, results_rows)
+        self._write_sheet(results_sheet, normalized_rows)
 
-        category_rows = self._aggregate_rows(results_rows, group_key="category")
+        category_rows = self._aggregate_rows(normalized_rows, group_key="category")
         category_sheet = workbook.create_sheet("category_results")
         self._write_sheet(category_sheet, category_rows)
 
-        difficulty_rows = self._aggregate_rows(results_rows, group_key="difficulty")
+        difficulty_rows = self._aggregate_rows(normalized_rows, group_key="difficulty")
         difficulty_sheet = workbook.create_sheet("difficulty_results")
         self._write_sheet(difficulty_sheet, difficulty_rows)
 
@@ -58,16 +60,18 @@ class RunWriter:
 
     @staticmethod
     def _aggregate_rows(results_rows: list[dict[str, Any]], *, group_key: str) -> list[dict[str, Any]]:
-        metrics = ("recall", "precision", "f1", "mrr", "ndcg", "hit_count")
-        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        metrics = ("recall", "precision", "f1", "mrr", "ndcg", "hit_count", "latency_ms")
+        groups: dict[tuple[str, int, str], dict[str, Any]] = {}
 
         for row in results_rows:
             strategy = str(row.get("strategy", ""))
+            k = int(row.get("k", 0) or 0)
             group_value = str(row.get(group_key, ""))
-            key = (strategy, group_value)
+            key = (strategy, k, group_value)
             if key not in groups:
                 groups[key] = {
                     "strategy": strategy,
+                    "k": k,
                     group_key: group_value,
                     "n": 0,
                     "recall": 0.0,
@@ -76,6 +80,7 @@ class RunWriter:
                     "mrr": 0.0,
                     "ndcg": 0.0,
                     "hit_count": 0.0,
+                    "latency_ms": 0.0,
                 }
             bucket = groups[key]
             bucket["n"] += 1
@@ -87,6 +92,7 @@ class RunWriter:
             groups.items(),
             key=lambda item: (
                 item[1]["strategy"],
+                int(item[1]["k"]),
                 int(item[1][group_key]) if group_key == "difficulty" and str(item[1][group_key]).isdigit() else str(item[1][group_key]),
             ),
         ):
@@ -94,6 +100,7 @@ class RunWriter:
             rows.append(
                 {
                     "strategy": aggregate["strategy"],
+                    "k": aggregate["k"],
                     group_key: aggregate[group_key],
                     "n": count,
                     "recall": aggregate["recall"] / count,
@@ -102,6 +109,14 @@ class RunWriter:
                     "mrr": aggregate["mrr"] / count,
                     "ndcg": aggregate["ndcg"] / count,
                     "hit_count": aggregate["hit_count"] / count,
+                    "latency_ms": aggregate["latency_ms"] / count,
                 }
             )
         return rows
+
+    @staticmethod
+    def _normalize_result_row(row: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(row)
+        if "latency_ms" not in normalized:
+            normalized["latency_ms"] = normalized.get("graph_total_latency_ms", 0.0)
+        return normalized

@@ -140,6 +140,11 @@ class RetrievalBaselineEvaluator:
                 hit_count = self.metrics.hit_count_at_k(unique_doc_ids, relevant_doc_ids, k)
                 mrr = self.metrics.mrr_at_k(unique_doc_ids, relevant_doc_ids, k)
                 ndcg = self.metrics.ndcg_at_k(unique_doc_ids, relevant_doc_ids, k)
+                graph_meta = self._extract_graph_traversal_meta(outcome.chunks)
+                latency_ms = self._as_float(
+                    self._extract_timing_ms(graph_meta).get("total_ms"),
+                    default=0.0,
+                )
                 rows.append(
                     EvaluationResultRow(
                         run_id=run_id,
@@ -160,6 +165,13 @@ class RetrievalBaselineEvaluator:
                         retrieved_count=min(k, len(unique_doc_ids)),
                         hit_count=hit_count,
                         error=outcome.strategy_error,
+                        graph_escalation_count=self._as_int(graph_meta.get("escalation_count"), default=0),
+                        graph_hops_executed=self._as_int(graph_meta.get("hops_executed"), default=0),
+                        graph_nodes_visited=self._as_int(graph_meta.get("nodes_visited"), default=0),
+                        graph_paths_examined=self._as_int(graph_meta.get("paths_examined"), default=0),
+                        graph_stop_reason=str(graph_meta.get("stop_reason", "")),
+                        graph_total_latency_ms=latency_ms,
+                        latency_ms=latency_ms,
                     ).to_dict()
                 )
         return rows
@@ -195,6 +207,29 @@ class RetrievalBaselineEvaluator:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _as_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _extract_graph_traversal_meta(chunks: list[Any]) -> dict[str, Any]:
+        for chunk in chunks:
+            metadata = getattr(chunk, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            traversal_meta = metadata.get("graph_traversal_meta")
+            if isinstance(traversal_meta, dict):
+                return traversal_meta
+        return {}
+
+    @staticmethod
+    def _extract_timing_ms(graph_meta: dict[str, Any]) -> dict[str, Any]:
+        timing = graph_meta.get("timing_ms")
+        return timing if isinstance(timing, dict) else {}
 
     @staticmethod
     def _build_run_id() -> str:
