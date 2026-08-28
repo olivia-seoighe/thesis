@@ -55,6 +55,8 @@ services:
       LOG_LEVEL: INFO
     ports:
       - "${RETRIEVAL_HOST_PORT:-18000}:8000"
+    volumes:
+      - ./service_acronyms.json:/app/service_acronyms.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/live')"]
       interval: 10s
