@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+NODE_LABELS: set[str] = {
+    "REPO",
+    "HANDLER",
+    "COMMAND",
+    "EVENT",
+    "BUSINESS_RULE",
+    "STATUS_CODE",
+    "SAGA",
+    "FEATURE_FLAG",
+    "TABLE",
+    "KAFKA_TOPIC",
+    "API",
+}
+
+EDGE_LABELS: set[str] = {
+    "OWNS_HANDLER",
+    "OWNS_COMMAND",
+    "OWNS_EVENT",
+    "OWNS_SAGA",
+    "OWNS_TABLE",
+    "HANDLES_COMMAND",
+    "HANDLES_EVENT",
+    "EMITS_EVENT",
+    "TRANSITIONS_STATUS",
+    "ENFORCES_RULE",
+    "USES_FEATURE_FLAG",
+    "READS_TABLE",
+    "WRITES_TABLE",
+    "CONSUMES_TOPIC",
+    "PRODUCES_TOPIC",
+    "CALLS_API",
+    "EXPOSES_API",
+    "SAGA_ORCHESTRATES_COMMAND",
+    "SAGA_AWAITS_EVENT",
+}
+
+OWNERSHIP_PREDICATES: dict[str, str] = {
+    "HANDLER": "OWNS_HANDLER",
+    "COMMAND": "OWNS_COMMAND",
+    "EVENT": "OWNS_EVENT",
+    "SAGA": "OWNS_SAGA",
+}
+
+LOCAL_SCOPED_NODE_LABELS: set[str] = {
+    "HANDLER",
+    "COMMAND",
+    "EVENT",
+    "SAGA",
+    "FEATURE_FLAG",
+    "TABLE",
+    "BUSINESS_RULE",
+}
+
+TIER_AST_LOCAL = "AST_LOCAL"
+TIER_CONTRACT_GLOBAL = "CONTRACT_GLOBAL"
+ALLOWED_TIERS: set[str] = {TIER_AST_LOCAL, TIER_CONTRACT_GLOBAL}
