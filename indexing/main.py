@@ -222,16 +222,24 @@ async def main() -> None:
                 doc = build_document(file_entry, source)
 
                 if graph_indexing_enabled:
+                    source_path = str(file_entry.get("file_path", ""))
                     triples = graph_extractor.extract(
                         summary=file_entry.get("summary", ""),
-                        document_title=file_entry.get("file_path", ""),
+                        document_title=source_path,
                         service=source,
                         source_code=file_entry.get("source_code", ""),
                     )
+                    for triple in triples:
+                        triple.properties.setdefault("document_id", doc.id)
+                    await graph_indexer.replace_source_triples(
+                        source_repo=source,
+                        source_path=source_path,
+                        triples=triples,
+                    )
+                    logger.info(
+                        f"[{i}/{len(files)}] {doc.title} → replaced graph evidence ({len(triples)} triple(s))"
+                    )
                     if triples:
-                        for triple in triples:
-                            triple.properties.setdefault("document_id", doc.id)
-                        await graph_indexer.upsert(triples)
                         logger.debug(
                             f"[{i}/{len(files)}] {doc.title} → {len(triples)} graph triple(s)"
                         )

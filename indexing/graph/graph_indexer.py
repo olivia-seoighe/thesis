@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from indexing.graph.config import GRAPH_NAME
 from indexing.graph.models import Triple
 from indexing.graph.ontology import ALLOWED_TIERS, EDGE_LABELS, LOCAL_SCOPED_NODE_LABELS, NODE_LABELS
+from indexing.graph.text_cleaning import clean_graph_text
 
 UPSERT_NODE_EVIDENCE_SQL = """
     INSERT INTO graph_node_evidence (
@@ -49,6 +50,53 @@ UPSERT_EDGE_EVIDENCE_SQL = """
         chunk_id = COALESCE(EXCLUDED.chunk_id, graph_edge_evidence.chunk_id)
 """
 
+FETCH_SOURCE_EDGE_KEYS_SQL = """
+    SELECT DISTINCT edge_key
+    FROM graph_edge_evidence
+    WHERE source_repo = $1
+      AND source_path = $2
+"""
+
+FETCH_SOURCE_NODE_KEYS_SQL = """
+    SELECT DISTINCT node_key
+    FROM graph_node_evidence
+    WHERE source_repo = $1
+      AND source_path = $2
+"""
+
+DELETE_SOURCE_EDGE_EVIDENCE_SQL = """
+    DELETE FROM graph_edge_evidence
+    WHERE source_repo = $1
+      AND source_path = $2
+"""
+
+DELETE_SOURCE_NODE_EVIDENCE_SQL = """
+    DELETE FROM graph_node_evidence
+    WHERE source_repo = $1
+      AND source_path = $2
+"""
+
+FETCH_EDGE_KEYS_WITHOUT_EVIDENCE_SQL = """
+    SELECT key
+    FROM unnest($1::text[]) AS keys(key)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM graph_edge_evidence gee WHERE gee.edge_key = key
+    )
+"""
+
+FETCH_NODE_KEYS_WITHOUT_EVIDENCE_SQL = """
+    SELECT key
+    FROM unnest($1::text[]) AS keys(key)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM graph_node_evidence gne WHERE gne.node_key = key
+    )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM graph_edge_evidence gee
+        WHERE gee.subject_key = key OR gee.object_key = key
+    )
+"""
+
 _SAFE_LABEL_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
@@ -72,6 +120,42 @@ class GraphIndexer:
 
     def __init__(self, connection_manager) -> None:
         self.cm = connection_manager
+
+    async def replace_source_triples(
+        self,
+        *,
+        source_repo: str,
+        source_path: str,
+        triples: list[Triple],
+    ) -> None:
+        """Replace graph evidence for a specific source file and prune stale entities."""
+        clean_repo = self._clean(source_repo)
+        clean_path = clean_graph_text(source_path).strip()
+        if not clean_repo:
+            raise ValueError("source_repo is required for source replacement")
+        if not clean_path:
+            raise ValueError("source_path is required for source replacement")
+
+        stale_edge_rows = await self.cm.fetch(FETCH_SOURCE_EDGE_KEYS_SQL, clean_repo, clean_path)
+        stale_node_rows = await self.cm.fetch(FETCH_SOURCE_NODE_KEYS_SQL, clean_repo, clean_path)
+        stale_edge_keys = [str(row["edge_key"]) for row in stale_edge_rows]
+        stale_node_keys = [str(row["node_key"]) for row in stale_node_rows]
+
+        await self.cm.execute(DELETE_SOURCE_EDGE_EVIDENCE_SQL, clean_repo, clean_path)
+        await self.cm.execute(DELETE_SOURCE_NODE_EVIDENCE_SQL, clean_repo, clean_path)
+
+        if triples:
+            await self.upsert(triples)
+
+        if stale_edge_keys:
+            edge_rows = await self.cm.fetch(FETCH_EDGE_KEYS_WITHOUT_EVIDENCE_SQL, stale_edge_keys)
+            for row in edge_rows:
+                await self._delete_edge_by_key(str(row["key"]))
+
+        if stale_node_keys:
+            node_rows = await self.cm.fetch(FETCH_NODE_KEYS_WITHOUT_EVIDENCE_SQL, stale_node_keys)
+            for row in node_rows:
+                await self._delete_node_by_key(str(row["key"]))
 
     async def upsert(self, triples: list[Triple]) -> None:
         """Write a list of triples to the AGE graph using Cypher MERGE.
@@ -185,6 +269,14 @@ class GraphIndexer:
             "AS (v ag_catalog.agtype);"
         )
         await self.cm.execute(sql, "{}")
+
+    async def _delete_edge_by_key(self, edge_key: str) -> None:
+        cypher = f"MATCH ()-[r {{edge_key: '{self._quote(edge_key)}'}}]-() DELETE r"
+        await self._execute_cypher(cypher)
+
+    async def _delete_node_by_key(self, node_key: str) -> None:
+        cypher = f"MATCH (n {{node_key: '{self._quote(node_key)}'}}) DETACH DELETE n"
+        await self._execute_cypher(cypher)
 
     def _build_node_lookup(self, node: _CanonicalNode) -> str:
         return (
