@@ -10,4 +10,5 @@ golden_queries.json
 golden_queries.csv
 datasets/
 results/
+graph_exports/
 service_acronyms.json

@@ -29,7 +29,7 @@ The generation service assembles retrieved context with citations and queries Cl
 
 ### Evaluation Framework
 
-The harness evaluates retrieval against the golden query set (`evaluation/datasets/v1`) and writes per-query metrics to `results.xlsx` (`results` sheet) plus aggregate sheets `category_results` and `difficulty_results` (recall, precision, F1, MRR, nDCG, hit_count).
+The harness evaluates retrieval against the golden query set (`evaluation/datasets/v1`) and writes per-query metrics to `results.xlsx` (`results` sheet) plus aggregate sheets `category_results` and `difficulty_results` (recall, precision, F1, MRR, nDCG, hit_count, latency_ms).
 
 Service-aware variants (`*-service-aware`) derive routing from query text plus a service acronym catalogue (`service_acronyms.json`) or retrieval `/sources`, then apply metadata mode decisions (GLOBAL / HARD_FILTER / BOOST) and record routing fields alongside metrics.
 
@@ -89,6 +89,13 @@ find summaries -name failed_files.json | head
 
 ```bash
 docker compose --profile ingest up --build indexing
+docker compose --profile ingest down
+```
+
+Graph-only refresh (updates knowledge graph evidence only; does not rewrite `document_embeddings` chunks):
+
+```bash
+GRAPH_ONLY=true GRAPH_INDEXING_ENABLED=true docker compose --profile ingest up --build indexing
 docker compose --profile ingest down
 ```
 
