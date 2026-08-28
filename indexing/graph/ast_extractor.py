@@ -216,7 +216,11 @@ class AstLocalExtractor:
                 name_node = node.child_by_field_name("name")
                 if name_node:
                     name = source_code[name_node.start_byte:name_node.end_byte]
-                    label = AstLocalExtractor._classify_symbol(name)
+                    bases_node = node.child_by_field_name("bases")
+                    bases = ""
+                    if bases_node:
+                        bases = source_code[bases_node.start_byte:bases_node.end_byte]
+                    label = AstLocalExtractor._classify_class_symbol(name, bases)
                     if label:
                         key = (name, label)
                         if key not in seen:
@@ -230,14 +234,15 @@ class AstLocalExtractor:
     def _extract_csharp_symbols_regex(source_code: str) -> list[tuple[str, str]]:
         pattern = re.compile(
             r"^\s*(?:(?:public|internal|private|protected|sealed|abstract|static|partial)\s+)*"
-            r"(?:class|record|interface)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            r"(?:class|record|interface)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^{};]*\))?\s*(?::\s*([^{]+))?\{",
             re.MULTILINE,
         )
         symbols: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for match in pattern.finditer(source_code):
             name = match.group(1)
-            label = AstLocalExtractor._classify_symbol(name)
+            bases = match.group(2) or ""
+            label = AstLocalExtractor._classify_class_symbol(name, bases)
             if not label:
                 continue
             key = (name, label)
@@ -251,13 +256,29 @@ class AstLocalExtractor:
     def _classify_symbol(token: str) -> str | None:
         if token.endswith("Handler"):
             return "HANDLER"
-        if token.endswith("Saga"):
-            return "SAGA"
         if token.endswith(("Command", "Request")):
             return "COMMAND"
         if token.endswith("Event"):
             return "EVENT"
         return None
+
+    @staticmethod
+    def _classify_class_symbol(class_name: str, bases: str) -> str | None:
+        if AstLocalExtractor._is_saga_base(bases):
+            return "SAGA"
+        return AstLocalExtractor._classify_symbol(class_name)
+
+    @staticmethod
+    def _is_saga_base(bases: str) -> bool:
+        token = (bases or "").strip()
+        if not token:
+            return False
+        return bool(
+            re.search(
+                r"(?:(?:^|[,\s])(?:global::)?(?:[A-Za-z_][A-Za-z0-9_]*\.)*Saga\s*<)",
+                token,
+            )
+        )
 
     @staticmethod
     def _extract_csharp_local_relations(source_code: str) -> list[tuple[str, str, str, str, str]]:
@@ -274,10 +295,10 @@ class AstLocalExtractor:
         )
         for class_match in class_header_pattern.finditer(source_code):
             class_name = class_match.group(1)
-            class_label = AstLocalExtractor._classify_symbol(class_name)
+            bases = class_match.group(2) or ""
+            class_label = AstLocalExtractor._classify_class_symbol(class_name, bases)
             if class_label not in {"HANDLER", "SAGA"}:
                 continue
-            bases = class_match.group(2) or ""
             for iface_name, message_type in interface_pattern.findall(bases):
                 symbol_name = message_type.split(".")[-1]
                 symbol_label = AstLocalExtractor._classify_symbol(symbol_name)
@@ -329,10 +350,14 @@ class AstLocalExtractor:
     @staticmethod
     def _extract_csharp_actor_blocks(source_code: str) -> list[tuple[str, str, str]]:
         blocks: list[tuple[str, str, str]] = []
-        class_pattern = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)[^{]*\{", re.MULTILINE)
+        class_pattern = re.compile(
+            r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^{};]*\))?\s*(?::\s*([^{]+))?\{",
+            re.MULTILINE,
+        )
         for match in class_pattern.finditer(source_code):
             class_name = match.group(1)
-            class_label = AstLocalExtractor._classify_symbol(class_name)
+            bases = match.group(2) or ""
+            class_label = AstLocalExtractor._classify_class_symbol(class_name, bases)
             if class_label not in {"HANDLER", "SAGA"}:
                 continue
             body_start = match.end() - 1
