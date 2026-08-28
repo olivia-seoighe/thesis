@@ -2,6 +2,9 @@ from __future__ import annotations
 
 NODE_LABELS: set[str] = {
     "REPO",
+    "DOTNET_PROJECT",
+    "TARGET_FRAMEWORK",
+    "NUGET_PACKAGE",
     "HANDLER",
     "COMMAND",
     "EVENT",
@@ -15,6 +18,9 @@ NODE_LABELS: set[str] = {
 }
 
 EDGE_LABELS: set[str] = {
+    "OWNS_PROJECT",
+    "TARGETS_FRAMEWORK",
+    "REFERENCES_PACKAGE",
     "OWNS_HANDLER",
     "OWNS_COMMAND",
     "OWNS_EVENT",

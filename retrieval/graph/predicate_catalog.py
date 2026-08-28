@@ -6,6 +6,9 @@ from .types import QueryIntent
 
 ALLOWED_PREDICATES_BY_INTENT: dict[QueryIntent, tuple[str, ...]] = {
     QueryIntent.TOPOLOGY: (
+        "OWNS_PROJECT",
+        "TARGETS_FRAMEWORK",
+        "REFERENCES_PACKAGE",
         "CONSUMES_TOPIC",
         "PRODUCES_TOPIC",
         "CALLS_API",
@@ -40,6 +43,9 @@ ALLOWED_PREDICATES_BY_INTENT: dict[QueryIntent, tuple[str, ...]] = {
         "TRANSITIONS_STATUS",
     ),
     QueryIntent.CONFIG: (
+        "OWNS_PROJECT",
+        "TARGETS_FRAMEWORK",
+        "REFERENCES_PACKAGE",
         "CONSUMES_TOPIC",
         "PRODUCES_TOPIC",
         "CALLS_API",
@@ -82,6 +88,9 @@ PREFERRED_PREDICATES_BY_INTENT: dict[QueryIntent, tuple[str, ...]] = {
 
 PREDICATE_PRIORITY_BY_INTENT: dict[QueryIntent, dict[str, int]] = {
     QueryIntent.TOPOLOGY: {
+        "TARGETS_FRAMEWORK": 0,
+        "REFERENCES_PACKAGE": 0,
+        "OWNS_PROJECT": 1,
         "CONSUMES_TOPIC": 0,
         "PRODUCES_TOPIC": 0,
         "CALLS_API": 1,
@@ -108,6 +117,9 @@ PREDICATE_PRIORITY_BY_INTENT: dict[QueryIntent, dict[str, int]] = {
 
 RELATION_WEIGHTS_BY_INTENT: dict[QueryIntent, dict[str, float]] = {
     QueryIntent.TOPOLOGY: {
+        "TARGETS_FRAMEWORK": 1.24,
+        "REFERENCES_PACKAGE": 1.18,
+        "OWNS_PROJECT": 1.1,
         "CONSUMES_TOPIC": 1.25,
         "PRODUCES_TOPIC": 1.22,
         "CALLS_API": 1.12,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from typing import Callable
 
@@ -16,6 +17,7 @@ from indexing.graph.config import (
     CONTRACT_API_CONFIDENCE,
     CONTRACT_EXPOSES_API_CONFIDENCE,
     CONTRACT_FLAG_CONFIDENCE,
+    CONTRACT_DOTNET_PROJECT_CONFIDENCE,
     CONTRACT_TABLE_CONFIDENCE,
     CONTRACT_TOPIC_CONFIDENCE,
     SOURCE_PRIORITY_APPSETTINGS_BASE,
@@ -39,7 +41,17 @@ SOURCE_KIND_CONFIGMAP = "configmap"
 SOURCE_KIND_APPSETTINGS_PROD = "appsettings_prod"
 SOURCE_KIND_APPSETTINGS_BASE = "appsettings_base"
 SOURCE_KIND_INGRESS = "ingress"
+SOURCE_KIND_CSPROJ = "csproj"
 EXTRACTOR_NAME = "graph_extractor_v1"
+AST_EXTENSIONS: tuple[str, ...] = (".cs",)
+CONTRACT_OR_CONFIG_HINTS: tuple[str, ...] = (
+    "schema_state_",
+    "asyncapi",
+    "configmap",
+    "appsettings",
+    "ingress",
+    ".csproj",
+)
 
 SECTION_CONFIGURATION = "configuration"
 SECTION_FEATURE_FLAGS = "feature flags"
@@ -133,6 +145,38 @@ class ContractGlobalExtractor:
             source_path=clean_graph_text(document_title),
             source_kind=source_kind,
         )
+
+        if source_kind == SOURCE_KIND_CSPROJ:
+            project_node = clean_graph_text(document_title)
+            if project_node:
+                add_triple(
+                    subject=repo_name,
+                    subject_label="REPO",
+                    predicate="OWNS_PROJECT",
+                    obj=project_node,
+                    object_label="DOTNET_PROJECT",
+                    confidence=CONTRACT_DOTNET_PROJECT_CONFIDENCE,
+                )
+                target_frameworks, package_refs = self._extract_csproj_metadata(source_code)
+                for target_framework in target_frameworks:
+                    add_triple(
+                        subject=project_node,
+                        subject_label="DOTNET_PROJECT",
+                        predicate="TARGETS_FRAMEWORK",
+                        obj=target_framework,
+                        object_label="TARGET_FRAMEWORK",
+                        confidence=CONTRACT_DOTNET_PROJECT_CONFIDENCE,
+                    )
+                for package_name in package_refs:
+                    add_triple(
+                        subject=project_node,
+                        subject_label="DOTNET_PROJECT",
+                        predicate="REFERENCES_PACKAGE",
+                        obj=package_name,
+                        object_label="NUGET_PACKAGE",
+                        confidence=CONTRACT_DOTNET_PROJECT_CONFIDENCE,
+                    )
+            return triples
 
         for topic in self._extract_topic_values(
             sections,
@@ -918,6 +962,40 @@ class ContractGlobalExtractor:
         return out
 
     @staticmethod
+    def _extract_csproj_metadata(source_code: str) -> tuple[list[str], list[str]]:
+        if not source_code.strip():
+            return [], []
+        try:
+            root = ET.fromstring(source_code)
+        except ET.ParseError:
+            return [], []
+
+        frameworks: set[str] = set()
+        packages: set[str] = set()
+
+        for element in root.iter():
+            if not isinstance(element.tag, str):
+                continue
+            tag_name = element.tag.rsplit("}", 1)[-1]
+            if tag_name in {"TargetFramework", "TargetFrameworks"}:
+                raw_value = (element.text or "").strip()
+                if not raw_value:
+                    continue
+                for framework in raw_value.split(";"):
+                    normalized_framework = clean_graph_text(framework)
+                    if normalized_framework:
+                        frameworks.add(normalized_framework)
+                continue
+            if tag_name == "PackageReference":
+                include_value = clean_graph_text(
+                    element.attrib.get("Include", "") or element.attrib.get("Update", "")
+                )
+                if include_value:
+                    packages.add(include_value)
+
+        return sorted(frameworks), sorted(packages)
+
+    @staticmethod
     def _derive_contract_source_kind(document_title: str) -> str:
         lower_title = document_title.lower()
         if "asyncapi" in lower_title:
@@ -930,4 +1008,6 @@ class ContractGlobalExtractor:
             return SOURCE_KIND_APPSETTINGS_BASE
         if "ingress" in lower_title:
             return SOURCE_KIND_INGRESS
+        if lower_title.endswith(".csproj"):
+            return SOURCE_KIND_CSPROJ
         return SOURCE_KIND_CONTRACT
