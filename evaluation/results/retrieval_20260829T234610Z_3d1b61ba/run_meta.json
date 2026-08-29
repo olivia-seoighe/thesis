@@ -1,0 +1,27 @@
+{
+  "run_id": "retrieval_20260829T234610Z_3d1b61ba",
+  "created_at_utc": "2026-08-29T23:46:10.574524+00:00",
+  "dataset_version": "v1",
+  "dataset_hashes": {
+    "queries_v1.jsonl": "f9f05d21be593f6f844fe72f7754bc9f8e34be2caa0113b73f40996d4f88217d",
+    "qrels_v1.jsonl": "fd2afa171fd5ac276de8b8cfd82c3bde77b9a246acfabdca53cf4fb06a639991"
+  },
+  "strategies": [
+    "keyword-fts",
+    "keyword-bm25"
+  ],
+  "k_values": [
+    10,
+    15
+  ],
+  "retrieval_url": "http://localhost:18000",
+  "query_count": 101,
+  "qrel_count": 660,
+  "config": {
+    "timeout_seconds": 60,
+    "max_k": 15,
+    "service_aware_enabled": false,
+    "metadata_boost_mode": "rrf",
+    "service_catalogue_path": "/Users/olivia.joyce/Documents/Masters/thesis/service_acronyms.json"
+  }
+}
