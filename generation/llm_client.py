@@ -57,7 +57,6 @@ class LLMClient:
             model=model_id,
             max_tokens=2048,
             system=SYSTEM_PROMPT,
-            temperature=0.1,
             messages=messages,
         )
 

@@ -2,7 +2,7 @@
 
 Endpoints:
     GET  /health
-    POST /query                  hybrid retrieval + LLM answer with citations
+    POST /query                  retrieval (hybrid/vector/keyword/graph) + LLM answer with citations
     GET  /conversations          list conversation history
     GET  /conversations/{id}     get one conversation
     DELETE /conversations/{id}   delete one conversation
@@ -12,6 +12,7 @@ Endpoints:
 import json
 import logging
 import os
+import asyncio
 import time
 import uuid
 from collections import deque
@@ -44,6 +45,7 @@ from models import (
     QueryResponse,
     VizResponse,
 )
+from query_decomposition import build_decomposition_plan
 
 RETRIEVAL_URL = os.getenv("RETRIEVAL_URL", "http://retrieval:8000")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://raguser:ragpassword@postgres:5432/ragdb")
@@ -137,10 +139,17 @@ async def _db_delete_conversation(conv_id: str) -> bool:
 
 # ── Retrieval helpers ─────────────────────────────────────────────────────────
 
-RETRIEVAL_MODES = ("hybrid", "vector", "keyword")
+RETRIEVAL_MODES = ("hybrid", "vector", "keyword", "graph")
+RETRIEVAL_MODE_ALIASES: dict[str, str] = {
+    "graph-service-aware": "graph",
+    "hybrid-service-aware": "hybrid",
+    "keyword-service-aware": "keyword",
+    "vector-service-aware": "vector",
+}
 
 
 async def _retrieve(client: httpx.AsyncClient, query: str, source: str | None, top_k: int, mode: str) -> list:
+    mode = RETRIEVAL_MODE_ALIASES.get(mode, mode)
     mode = mode if mode in RETRIEVAL_MODES else "hybrid"
     params: dict = {"query": query, "top_k": top_k}
     if source:
@@ -152,6 +161,47 @@ async def _retrieve(client: httpx.AsyncClient, query: str, source: str | None, t
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _flatten_chunks(retrieval_results: list) -> list[dict[str, Any]]:
+    return [chunk for response in retrieval_results for chunk in response.get("chunks", [])]
+
+
+def _chunk_key(chunk: dict[str, Any]) -> str:
+    return str(chunk.get("chunk_id") or chunk.get("document_id") or chunk.get("document_title") or id(chunk))
+
+
+def _merge_branch_chunks(branch_chunks: dict[str, list[dict[str, Any]]], top_k: int) -> list[dict[str, Any]]:
+    branch_count = max(1, len(branch_chunks))
+    per_branch = max(1, top_k // branch_count)
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for chunks in branch_chunks.values():
+        for chunk in sorted(chunks, key=lambda item: float(item.get("score", 0.0)), reverse=True)[:per_branch]:
+            key = _chunk_key(chunk)
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(chunk)
+
+    if len(selected) >= top_k:
+        return selected[:top_k]
+
+    remaining = sorted(
+        [chunk for chunks in branch_chunks.values() for chunk in chunks],
+        key=lambda item: float(item.get("score", 0.0)),
+        reverse=True,
+    )
+    for chunk in remaining:
+        key = _chunk_key(chunk)
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(chunk)
+        if len(selected) >= top_k:
+            break
+    return selected
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -167,17 +217,34 @@ async def query(req: QueryRequest) -> QueryResponse:
     source = req.source
     conv_id = req.conversation_id or str(uuid.uuid4())
 
-    # Retrieval — vector, keyword, or hybrid (RRF) depending on req.mode
+    decomposition_plan = build_decomposition_plan(req.query)
+
+    # Retrieval — hybrid/vector/keyword/graph depending on req.mode
     t_ret_start = time.time()
     async with httpx.AsyncClient() as client:
         try:
-            retrieval_results = await _retrieve(client, req.query, source, req.top_k, req.mode)
+            if decomposition_plan.should_decompose:
+                branch_pairs = await asyncio.gather(
+                    *[
+                        _retrieve(client, sub.query, source, req.top_k, req.mode)
+                        for sub in decomposition_plan.sub_queries
+                    ]
+                )
+                branch_chunks = {
+                    sub.id: _flatten_chunks(results)
+                    for sub, results in zip(decomposition_plan.sub_queries, branch_pairs)
+                }
+                merged_chunks = _merge_branch_chunks(branch_chunks, req.top_k)
+                branch_result_counts = {branch_id: len(chunks) for branch_id, chunks in branch_chunks.items()}
+            else:
+                retrieval_results = await _retrieve(client, req.query, source, req.top_k, req.mode)
+                merged_chunks = _flatten_chunks(retrieval_results)
+                branch_result_counts = {}
         except httpx.HTTPStatusError as exc:
             log.error(f"Retrieval failed: {exc}", exc_info=True)
             raise HTTPException(status_code=502, detail=f"Retrieval error: {exc}")
 
     retrieval_ms = (time.time() - t_ret_start) * 1000
-    merged_chunks = [chunk for response in retrieval_results for chunk in response.get("chunks", [])]
 
     if not merged_chunks:
         log.warning(f"No results retrieved for query: {req.query!r}")
@@ -258,6 +325,10 @@ async def query(req: QueryRequest) -> QueryResponse:
         latency_ms=total_ms,
         retrieval_latency_ms=retrieval_ms,
         generation_latency_ms=gen_ms,
+        decomposition_used=decomposition_plan.should_decompose,
+        decomposition_reason=decomposition_plan.reason,
+        decomposition_branches=[sub.id for sub in decomposition_plan.sub_queries],
+        branch_result_counts=branch_result_counts,
     )
 
 

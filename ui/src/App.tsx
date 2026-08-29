@@ -12,12 +12,14 @@ export default function App() {
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
   const [activeMessages, setActiveMessages] = useState<Message[]>([])
   const [activeTab, setActiveTab] = useState<Tab>('chat')
+  const [mountKey, setMountKey] = useState(0)
 
   useEffect(() => {
     listConversations().then(setConversations).catch(() => {})
   }, [])
 
   const handleSelect = async (id: string) => {
+    setMountKey(k => k + 1)
     setActiveConvId(id)
     setActiveTab('chat')
     try {
@@ -29,6 +31,7 @@ export default function App() {
   }
 
   const handleNew = () => {
+    setMountKey(k => k + 1)
     setActiveConvId(null)
     setActiveMessages([])
     setActiveTab('chat')
@@ -99,7 +102,7 @@ export default function App() {
         <div style={{ flex: 1, overflow: 'hidden' }}>
           {activeTab === 'chat' ? (
             <ChatInterface
-              key={activeConvId ?? 'new'}
+              key={mountKey}
               conversationId={activeConvId}
               initialMessages={activeMessages}
               onConversationCreated={handleConversationCreated}

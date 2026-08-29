@@ -25,7 +25,6 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setMessages(initialMessages)
     setActiveConvId(conversationId)
   }, [conversationId])
 
@@ -37,7 +36,6 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
     getSources()
       .then(list => {
         setSources(list)
-        setSource(prev => prev || list[0] || '')
       })
       .catch(() => {})
   }, [])
@@ -104,6 +102,7 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
             onChange={e => setSource(e.target.value)}
             style={{ border: '1px solid #cbd5e0', borderRadius: 6, padding: '3px 8px', fontSize: 12, background: '#fff', cursor: 'pointer' }}
           >
+            <option value="">All sources</option>
             {sources.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </label>
@@ -114,7 +113,7 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
             onChange={e => setMode(e.target.value)}
             style={{ border: '1px solid #cbd5e0', borderRadius: 6, padding: '3px 8px', fontSize: 12, background: '#fff', cursor: 'pointer' }}
           >
-            {['hybrid', 'vector', 'keyword'].map(m => <option key={m} value={m}>{m}</option>)}
+            {['hybrid', 'vector', 'keyword', 'graph'].map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </label>
         <label style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>
