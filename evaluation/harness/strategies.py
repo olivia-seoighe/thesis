@@ -19,6 +19,9 @@ class StrategyResponseChunk:
     score: float
     source: str
     metadata: dict[str, Any]
+    model_used: str
+    keyword_ranker: str
+    search_duration_ms: float
 
 
 class StrategyRunner:
@@ -26,8 +29,12 @@ class StrategyRunner:
 
     ENDPOINTS = {
         "keyword": "/search/keyword",
+        "keyword-fts": "/search/keyword",
+        "keyword-bm25": "/search/keyword",
         "vector": "/search/vector",
         "hybrid": "/search/hybrid",
+        "hybrid-fts": "/search/hybrid",
+        "hybrid-bm25": "/search/hybrid",
         "graph": "/search/graph",
         "graph-adaptive": "/search/graph",
         "graph-fixed": "/search/graph",
@@ -58,6 +65,10 @@ class StrategyRunner:
             params["hop_policy"] = "fixed"
         elif strategy == "graph-adaptive":
             params["hop_policy"] = "adaptive"
+        elif strategy in {"keyword-fts", "hybrid-fts"}:
+            params["keyword_ranker"] = "fts"
+        elif strategy in {"keyword-bm25", "hybrid-bm25"}:
+            params["keyword_ranker"] = "bm25"
 
         url = f"{self.base_url}{endpoint}?{urlencode(params)}"
         request = Request(url=url, method="GET")
@@ -78,7 +89,7 @@ class StrategyRunner:
                 f"Timed out waiting for {url} after {self.timeout_seconds}s."
             ) from exc
 
-        return self._extract_chunks(payload)
+        return self._extract_chunks(payload, strategy)
 
     def list_sources(self) -> tuple[str, ...]:
         url = f"{self.base_url}/sources"
@@ -109,7 +120,7 @@ class StrategyRunner:
         return tuple(sorted(set(sources)))
 
     @staticmethod
-    def _extract_chunks(payload: Any) -> list[StrategyResponseChunk]:
+    def _extract_chunks(payload: Any, strategy: str) -> list[StrategyResponseChunk]:
         chunks: list[StrategyResponseChunk] = []
         if not isinstance(payload, list):
             return chunks
@@ -117,17 +128,30 @@ class StrategyRunner:
         for response_row in payload:
             if not isinstance(response_row, dict):
                 continue
+            response_model_used = str(response_row.get("model_used", "")).strip()
+            response_search_duration_ms = float(response_row.get("search_duration_ms", 0.0) or 0.0)
             row_chunks = response_row.get("chunks", [])
             if not isinstance(row_chunks, list):
                 continue
             for chunk in row_chunks:
-                parsed = StrategyRunner._extract_chunk(chunk)
+                parsed = StrategyRunner._extract_chunk(
+                    chunk,
+                    response_model_used=response_model_used,
+                    response_search_duration_ms=response_search_duration_ms,
+                    strategy=strategy,
+                )
                 if parsed is not None:
                     chunks.append(parsed)
         return chunks
 
     @staticmethod
-    def _extract_chunk(chunk: Any) -> StrategyResponseChunk | None:
+    def _extract_chunk(
+        chunk: Any,
+        *,
+        response_model_used: str,
+        response_search_duration_ms: float,
+        strategy: str,
+    ) -> StrategyResponseChunk | None:
         if not isinstance(chunk, dict):
             return None
         chunk_id = str(chunk.get("chunk_id", "")).strip()
@@ -138,10 +162,21 @@ class StrategyRunner:
         source = str(chunk.get("source", "")).strip()
         metadata_raw = chunk.get("metadata")
         metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+        ranker_value = metadata.get("keyword_ranker")
+        keyword_ranker = str(ranker_value).strip() if isinstance(ranker_value, str) else ""
+        if not keyword_ranker:
+            if strategy in {"keyword-bm25", "hybrid-bm25"}:
+                keyword_ranker = "bm25"
+            elif strategy in {"keyword", "keyword-fts", "hybrid", "hybrid-fts"}:
+                keyword_ranker = "fts"
+
         return StrategyResponseChunk(
             chunk_id=chunk_id,
             document_id=document_id,
             score=score,
             source=source,
             metadata=metadata,
+            model_used=response_model_used,
+            keyword_ranker=keyword_ranker,
+            search_duration_ms=response_search_duration_ms,
         )

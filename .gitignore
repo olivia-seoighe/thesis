@@ -12,3 +12,4 @@ datasets/
 results/
 graph_exports/
 service_acronyms.json
+retrieval/tests

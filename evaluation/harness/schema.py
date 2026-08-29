@@ -115,6 +115,8 @@ class EvaluationResultRow:
     graph_stop_reason: str = ""
     graph_total_latency_ms: float = 0.0
     latency_ms: float = 0.0
+    keyword_ranker: str = ""
+    keyword_model_used: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

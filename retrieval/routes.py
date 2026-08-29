@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Literal
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -107,6 +107,10 @@ async def search_keyword(
         3,
         description="Maximum chunks per document. Default 3. None = no limit.",
     ),
+    keyword_ranker: Literal["fts", "bm25"] = Query(
+        "fts",
+        description="Keyword ranker: fts (default) or bm25.",
+    ),
 ):
     logger.info(
         "Processing keyword search request",
@@ -117,6 +121,7 @@ async def search_keyword(
                 "source": source,
                 "match_all": match_all,
                 "max_chunks_per_document": max_chunks_per_document,
+                "keyword_ranker": keyword_ranker,
                 "query_length": len(query),
             }
         },
@@ -129,6 +134,7 @@ async def search_keyword(
             sources=sources,
             match_all=match_all,
             max_chunks_per_document=max_chunks_per_document,
+            keyword_ranker=keyword_ranker,
         )
         results = await keyword_search_endpoint.run(search_request)
         logger.info(
@@ -154,14 +160,23 @@ async def search_hybrid(
         None,
         description=SOURCE_PARAM_DESCRIPTION,
     ),
+    keyword_ranker: Literal["fts", "bm25"] = Query(
+        "fts",
+        description="Keyword ranker used by hybrid endpoint: fts (default) or bm25.",
+    ),
 ):
     logger.info(
         "Processing hybrid search request",
-        extra={"search": {"query": query, "top_k": top_k, "source": source}},
+        extra={"search": {"query": query, "top_k": top_k, "source": source, "keyword_ranker": keyword_ranker}},
     )
     try:
         sources = _parse_sources_param(source)
-        search_request = SearchRequest(query=query, top_k=top_k, sources=sources)
+        search_request = SearchRequest(
+            query=query,
+            top_k=top_k,
+            sources=sources,
+            keyword_ranker=keyword_ranker,
+        )
         results = await hybrid_search_endpoint.run(search_request)
         logger.info(
             "Hybrid search completed",
@@ -235,6 +250,7 @@ async def version() -> dict:
             "cross_chunk_match_all": True,
             "document_diversity": True,
             "graph_search": True,
+            "keyword_ranker": ["fts", "bm25"],
         },
     }
 

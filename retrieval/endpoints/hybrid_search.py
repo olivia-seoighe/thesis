@@ -69,6 +69,6 @@ class HybridSearchEndpoint:
             total_results=len(merged_chunks),
             search_duration_ms=(time.time() - start) * 1000,
             embedding_duration_ms=vec_response.embedding_duration_ms,
-            model_used=f"{vec_response.model_used}+keyword+graph",
+            model_used=f"{vec_response.model_used}+{kw_response.model_used}+graph",
             source_searched=vec_response.source_searched,
         )]

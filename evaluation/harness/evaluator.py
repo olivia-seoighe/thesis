@@ -132,6 +132,8 @@ class RetrievalBaselineEvaluator:
                 decision=execution_decision,
                 top_k=max(self.k_values),
             )
+            keyword_ranker = self._resolve_keyword_ranker(strategy, outcome.chunks)
+            keyword_model_used = self._resolve_keyword_model_used(outcome.chunks)
             unique_doc_ids = self.metrics.unique_doc_ids_in_order([chunk.document_id for chunk in outcome.chunks])
             for k in self.k_values:
                 recall = self.metrics.recall_at_k(unique_doc_ids, relevant_doc_ids, k)
@@ -141,9 +143,10 @@ class RetrievalBaselineEvaluator:
                 mrr = self.metrics.mrr_at_k(unique_doc_ids, relevant_doc_ids, k)
                 ndcg = self.metrics.ndcg_at_k(unique_doc_ids, relevant_doc_ids, k)
                 graph_meta = self._extract_graph_traversal_meta(outcome.chunks)
+                response_latency_ms = self._extract_response_latency_ms(outcome.chunks)
                 latency_ms = self._as_float(
                     self._extract_timing_ms(graph_meta).get("total_ms"),
-                    default=0.0,
+                    default=response_latency_ms,
                 )
                 rows.append(
                     EvaluationResultRow(
@@ -172,6 +175,8 @@ class RetrievalBaselineEvaluator:
                         graph_stop_reason=str(graph_meta.get("stop_reason", "")),
                         graph_total_latency_ms=latency_ms,
                         latency_ms=latency_ms,
+                        keyword_ranker=keyword_ranker,
+                        keyword_model_used=keyword_model_used,
                     ).to_dict()
                 )
         return rows
@@ -230,6 +235,39 @@ class RetrievalBaselineEvaluator:
     def _extract_timing_ms(graph_meta: dict[str, Any]) -> dict[str, Any]:
         timing = graph_meta.get("timing_ms")
         return timing if isinstance(timing, dict) else {}
+
+    @staticmethod
+    def _extract_response_latency_ms(chunks: list[Any]) -> float:
+        for chunk in chunks:
+            latency = getattr(chunk, "search_duration_ms", None)
+            if latency is None:
+                continue
+            try:
+                return float(latency)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    @staticmethod
+    def _resolve_keyword_ranker(strategy: str, chunks: list[Any]) -> str:
+        strategy_token = strategy.strip().lower()
+        if "bm25" in strategy_token:
+            return "bm25"
+        if strategy_token.startswith("keyword") or strategy_token.startswith("hybrid"):
+            for chunk in chunks:
+                ranker = getattr(chunk, "keyword_ranker", "")
+                if isinstance(ranker, str) and ranker.strip():
+                    return ranker.strip()
+            return "fts"
+        return ""
+
+    @staticmethod
+    def _resolve_keyword_model_used(chunks: list[Any]) -> str:
+        for chunk in chunks:
+            model_used = getattr(chunk, "model_used", "")
+            if isinstance(model_used, str) and model_used.strip():
+                return model_used.strip()
+        return ""
 
     @staticmethod
     def _build_run_id() -> str:

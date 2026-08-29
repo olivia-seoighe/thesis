@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -18,6 +18,10 @@ class SearchRequest(BaseModel):
     max_chunks_per_document: int | None = Field(
         3,
         description="Maximum chunks per document for diversity. Default 3. None = no limit.",
+    )
+    keyword_ranker: Literal["fts", "bm25"] = Field(
+        "fts",
+        description="Keyword ranking mode. Defaults to PostgreSQL FTS.",
     )
     entity_filter: str | None = Field(
         None,

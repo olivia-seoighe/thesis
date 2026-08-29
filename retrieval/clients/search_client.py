@@ -13,6 +13,7 @@ import asyncpg
 
 from retrieval.clients.embedding_client import EmbeddingAPIClient
 from retrieval.models.models import RetrievedChunk, SearchRequest, SearchResponse
+from retrieval.strategies.bm25 import BM25Index, tokenize_bm25
 from retrieval.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -68,6 +69,10 @@ class SearchClient:
 
         self.embedding_client = EmbeddingAPIClient()
         self.hnsw_ef_search = int(os.getenv("HNSW_EF_SEARCH", "400"))
+        self.bm25_index = BM25Index(
+            k1=float(os.getenv("BM25_K1", "1.2")),
+            b=float(os.getenv("BM25_B", "0.75")),
+        )
 
         logger.info(
             f"Initialized SearchClient: {self.host}:{self.port}/{self.database}, "
@@ -509,8 +514,43 @@ class SearchClient:
                 return list(await conn.fetch(sql, tsquery_or, top_k, max_chunks_per_document))
             return list(await conn.fetch(sql, tsquery_or, top_k))
 
-    async def search_keyword(self, request: SearchRequest) -> SearchResponse:
-        """Perform keyword search using PostgreSQL full-text search (BM25-style)."""
+    async def _fetch_bm25_corpus_rows(self) -> list[asyncpg.Record]:
+        """Fetch chunk corpus used by BM25 at the same retrieval unit (chunk)."""
+        sql = """
+            SELECT
+                de.chunk_id,
+                de.text,
+                de.source_code,
+                de.document_id,
+                COALESCE(de.document_title, dm.name, '') AS document_title,
+                dm.name,
+                dm.url,
+                (de.metadata)::jsonb AS metadata,
+                de.source,
+                dm.last_modified_date
+            FROM document_embeddings de
+            LEFT JOIN document_metadata dm ON de.document_id = dm.document_id;
+        """
+        return await self.fetch(sql)
+
+    def invalidate_bm25_index(self) -> None:
+        self.bm25_index.invalidate()
+
+    async def rebuild_bm25_index(self) -> None:
+        stats = await self.bm25_index.rebuild(self._fetch_bm25_corpus_rows)
+        logger.info(
+            "BM25 index rebuilt",
+            extra={
+                "bm25": {
+                    "documents": stats.document_count,
+                    "avgdl": stats.avgdl,
+                    "build_duration_ms": stats.build_duration_ms,
+                }
+            },
+        )
+
+    async def search_keyword_fts(self, request: SearchRequest) -> SearchResponse:
+        """Perform keyword search using PostgreSQL FTS + ts_rank_cd."""
         start_time = time.time()
         terms = _sanitize_terms(request.query)
 
@@ -669,6 +709,7 @@ class SearchClient:
                 chunk_metadata: dict = {
                     **(json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"] or {}),
                     "search_type": "keyword",
+                    "keyword_ranker": "fts_ts_rank_cd",
                     "source": row["source"],
                 }
                 if request.match_all and "term_count" in row:
@@ -729,6 +770,103 @@ class SearchClient:
                 exc_info=True,
             )
             raise
+
+    async def search_keyword_bm25(self, request: SearchRequest) -> SearchResponse:
+        """Perform pure Okapi BM25 keyword search over cached chunk corpus."""
+        terms = tokenize_bm25(request.query)
+        if not terms:
+            return SearchResponse(
+                chunks=[],
+                total_results=0,
+                search_duration_ms=0.0,
+                embedding_duration_ms=0.0,
+                model_used="okapi-bm25",
+                source_searched=",".join(request.sources) if request.sources else "all",
+            )
+
+        build_stats = await self.bm25_index.ensure_built(self._fetch_bm25_corpus_rows)
+        if build_stats.build_duration_ms > 0:
+            logger.info(
+                "BM25 index built",
+                extra={
+                    "bm25": {
+                        "documents": build_stats.document_count,
+                        "avgdl": build_stats.avgdl,
+                        "build_duration_ms": build_stats.build_duration_ms,
+                    }
+                },
+            )
+
+        search_start = time.time()
+        hits = self.bm25_index.search(
+            query=request.query,
+            top_k=request.top_k,
+            sources=request.sources,
+            max_chunks_per_document=request.max_chunks_per_document,
+            match_all=request.match_all,
+        )
+        search_duration = (time.time() - search_start) * 1000
+
+        chunks: list[RetrievedChunk] = []
+        for hit in hits:
+            doc = hit.document
+            chunk_metadata: dict = {
+                **(doc.metadata or {}),
+                "search_type": "keyword",
+                "keyword_ranker": "bm25",
+                "bm25_k1": self.bm25_index.k1,
+                "bm25_b": self.bm25_index.b,
+                "source": doc.source,
+            }
+            if request.match_all:
+                chunk_metadata["match_all"] = {
+                    "document_qualifies": True,
+                    "match_mode": "cross_chunk_filter_only",
+                }
+
+            chunks.append(
+                RetrievedChunk(
+                    chunk_id=doc.chunk_id,
+                    text=doc.text,
+                    source_code=doc.source_code,
+                    document_id=doc.document_id,
+                    document_title=doc.document_title,
+                    url=doc.url,
+                    last_modified_date=doc.last_modified_date,
+                    metadata=chunk_metadata,
+                    source=doc.source,
+                    score=float(hit.score),
+                )
+            )
+
+        logger.info(
+            "BM25 keyword search completed",
+            extra={
+                "search": {
+                    "results_count": len(chunks),
+                    "search_duration_ms": search_duration,
+                    "sources": request.sources or "all",
+                    "match_all": request.match_all,
+                    "k1": self.bm25_index.k1,
+                    "b": self.bm25_index.b,
+                }
+            },
+        )
+
+        return SearchResponse(
+            chunks=chunks,
+            total_results=len(chunks),
+            search_duration_ms=search_duration,
+            embedding_duration_ms=0.0,
+            model_used="okapi-bm25",
+            source_searched=",".join(request.sources) if request.sources else "all",
+        )
+
+    async def search_keyword(self, request: SearchRequest) -> SearchResponse:
+        """Dispatch keyword search by configured ranker."""
+        if request.keyword_ranker == "bm25":
+            return await self.search_keyword_bm25(request)
+        return await self.search_keyword_fts(request)
 
     async def health_check(self) -> bool:
         try:

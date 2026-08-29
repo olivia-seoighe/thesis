@@ -80,6 +80,8 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Comma-separated strategies. Default subset: "
             "graph-service-aware,hybrid,hybrid-service-aware,keyword-service-aware,vector-service-aware. "
+            "Keyword variants: keyword (default fts), keyword-fts, keyword-bm25. "
+            "Hybrid variants: hybrid (default fts), hybrid-fts, hybrid-bm25. "
             "Graph variants: graph-adaptive, graph-fixed. "
             "Service-aware variant: append -service-aware (e.g. vector-service-aware)."
         ),
