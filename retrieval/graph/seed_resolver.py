@@ -7,6 +7,7 @@ from typing import Any
 
 from retrieval.query_processor import normalize_query_token
 
+from .entity_linker import is_generic_label_term
 from .queries import build_label_seed_lookup_query, build_seed_lookup_query
 from .types import (
     SEEDABLE_NODE_LABELS,
@@ -20,8 +21,6 @@ from .types import (
 )
 
 _MAX_SEED_MATCHES = 10
-
-
 async def resolve_seeds(seed_request: SeedRequest, graph_reader: GraphReader) -> SeedResolution:
     matches: list[SeedMatch] = []
     unresolved: list[EntityMention] = []
@@ -58,6 +57,8 @@ async def lookup_any_label(value: str, graph_reader: GraphReader) -> list[GraphN
 
 async def _lookup_for_mention(mention: EntityMention, graph_reader: GraphReader) -> list[GraphNodeRef]:
     if mention.preferred_label in SEEDABLE_NODE_LABELS:
+        if is_generic_label_term(label=mention.preferred_label, normalized_term=mention.normalized):
+            return []
         direct_matches = await _lookup_with_label(mention.text, mention.preferred_label, graph_reader)
         if direct_matches:
             return direct_matches

@@ -52,6 +52,9 @@ _CROSS_SERVICE_QUERY_HINTS: tuple[str, ...] = (
     "cross-service",
     "all services",
 )
+_GENERIC_LABEL_TERMS: dict[str, frozenset[str]] = {
+    "KAFKA_TOPIC": frozenset({"kafka", "topic", "topics"}),
+}
 
 
 @dataclass(frozen=True)
@@ -248,6 +251,12 @@ def _requests_cross_service(query: str) -> bool:
     if not normalized:
         return False
     return any(hint in normalized for hint in _CROSS_SERVICE_QUERY_HINTS)
+
+
+def is_generic_label_term(*, label: str | None, normalized_term: str) -> bool:
+    if not label:
+        return False
+    return normalized_term in _GENERIC_LABEL_TERMS.get(label, frozenset())
 
 
 def _normalized_query_token_forms(token: str) -> tuple[str, ...]:

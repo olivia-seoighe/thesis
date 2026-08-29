@@ -22,7 +22,13 @@ def build_seed_lookup_query(seed: EntityMention) -> CypherSpec:
                   AND (
                     toLower(n.name) = toLower($name)
                     OR toLower(n.name) CONTAINS toLower($name)
-                    OR toLower(n.node_key) CONTAINS toLower($name)
+                    OR ($label = '' AND toLower(n.node_key) CONTAINS toLower($name))
+                    OR replace(toLower(n.name), '_', '-') = replace(toLower($name), '_', '-')
+                    OR replace(toLower(n.name), '_', '-') CONTAINS replace(toLower($name), '_', '-')
+                    OR (
+                      $label = ''
+                      AND replace(toLower(n.node_key), '_', '-') CONTAINS replace(toLower($name), '_', '-')
+                    )
                   )
                 RETURN n.node_key AS node_key, n.label AS node_label, n.name AS node_name
                 LIMIT toInteger($limit)
