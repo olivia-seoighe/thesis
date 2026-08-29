@@ -9,6 +9,10 @@ _retrieval_host_port = os.getenv("RETRIEVAL_HOST_PORT", "18000")
 DEFAULT_RETRIEVAL_URL = os.getenv(
 	"RETRIEVAL_URL", f"http://localhost:{_retrieval_host_port}"
 )
+_generation_host_port = os.getenv("GENERATION_HOST_PORT", "18002")
+DEFAULT_GENERATION_URL = os.getenv(
+    "GENERATION_URL", f"http://localhost:{_generation_host_port}"
+)
 DEFAULT_STRATEGIES = (
     "graph-service-aware",
     "hybrid",
@@ -18,6 +22,9 @@ DEFAULT_STRATEGIES = (
 )
 DEFAULT_K_VALUES = (10, 15)
 DEFAULT_TIMEOUT_SECONDS = int(os.getenv("EVAL_HTTP_TIMEOUT_SECONDS", "60"))
+DEFAULT_GENERATION_TIMEOUT_SECONDS = int(os.getenv("GEN_EVAL_HTTP_TIMEOUT_SECONDS", "90"))
+DEFAULT_GENERATION_MODES = ("hybrid", "graph")
+DEFAULT_DECOMPOSITION_POLICIES = ("auto",)
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 EVALUATION_DIR = ROOT_DIR / "evaluation"
