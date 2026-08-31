@@ -27,6 +27,10 @@ class SearchRequest(BaseModel):
         None,
         description="Optional entity filter for vector search. Matches document title and content.",
     )
+    retrieval_corpus: Literal["summaries", "code", "all"] = Field(
+        "summaries",
+        description="Retrieval corpus selector. summaries (default), code, or all.",
+    )
 
 
 

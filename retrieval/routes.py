@@ -20,6 +20,7 @@ TOP_K_PARAM_DESCRIPTION = "Number of results to return"
 SOURCE_PARAM_DESCRIPTION = (
     "Source filter(s). Single source or comma-separated list. Omit to search all sources."
 )
+CORPUS_PARAM_DESCRIPTION = "Retrieval corpus selector: summaries (default), code, or all."
 
 vector_search_endpoint = VectorSearchEndpoint()
 keyword_search_endpoint = KeywordSearchEndpoint(
@@ -40,6 +41,19 @@ def _parse_sources_param(source: str | None) -> list[str]:
     return [value.strip() for value in source.split(",")] if source else []
 
 
+def _normalize_corpus_param(corpus: str | None) -> str:
+    if not isinstance(corpus, str):
+        corpus = None
+    token = (corpus or "summaries").strip().lower()
+    if token in {"summary", "summaries"}:
+        return "summaries"
+    if token in {"code", "source_code"}:
+        return "code"
+    if token == "all":
+        return "all"
+    raise HTTPException(status_code=400, detail=f"Invalid corpus value: {corpus!r}")
+
+
 def _results_count(results: list[SearchResponse]) -> int:
     return sum(len(item.chunks) for item in results)
 
@@ -57,6 +71,7 @@ async def search_vector(
         None,
         description="Optional entity filter to narrow search to documents containing this entity.",
     ),
+    corpus: str = Query("summaries", description=CORPUS_PARAM_DESCRIPTION),
 ):
     logger.info(
         "Processing vector search request",
@@ -66,14 +81,20 @@ async def search_vector(
                 "top_k": top_k,
                 "source": source,
                 "entity_filter": entity_filter,
+                "corpus": corpus,
                 "query_length": len(query),
             }
         },
     )
     try:
         sources = _parse_sources_param(source)
+        retrieval_corpus = _normalize_corpus_param(corpus)
         search_request = SearchRequest(
-            query=query, top_k=top_k, sources=sources, entity_filter=entity_filter
+            query=query,
+            top_k=top_k,
+            sources=sources,
+            entity_filter=entity_filter,
+            retrieval_corpus=retrieval_corpus,
         )
         results = await vector_search_endpoint.run(search_request)
         logger.info(
@@ -111,6 +132,7 @@ async def search_keyword(
         "fts",
         description="Keyword ranker: fts (default) or bm25.",
     ),
+    corpus: str = Query("summaries", description=CORPUS_PARAM_DESCRIPTION),
 ):
     logger.info(
         "Processing keyword search request",
@@ -122,12 +144,14 @@ async def search_keyword(
                 "match_all": match_all,
                 "max_chunks_per_document": max_chunks_per_document,
                 "keyword_ranker": keyword_ranker,
+                "corpus": corpus,
                 "query_length": len(query),
             }
         },
     )
     try:
         sources = _parse_sources_param(source)
+        retrieval_corpus = _normalize_corpus_param(corpus)
         search_request = SearchRequest(
             query=query,
             top_k=top_k,
@@ -135,6 +159,7 @@ async def search_keyword(
             match_all=match_all,
             max_chunks_per_document=max_chunks_per_document,
             keyword_ranker=keyword_ranker,
+            retrieval_corpus=retrieval_corpus,
         )
         results = await keyword_search_endpoint.run(search_request)
         logger.info(
@@ -164,18 +189,29 @@ async def search_hybrid(
         "fts",
         description="Keyword ranker used by hybrid endpoint: fts (default) or bm25.",
     ),
+    corpus: str = Query("summaries", description=CORPUS_PARAM_DESCRIPTION),
 ):
     logger.info(
         "Processing hybrid search request",
-        extra={"search": {"query": query, "top_k": top_k, "source": source, "keyword_ranker": keyword_ranker}},
+        extra={
+            "search": {
+                "query": query,
+                "top_k": top_k,
+                "source": source,
+                "keyword_ranker": keyword_ranker,
+                "corpus": corpus,
+            }
+        },
     )
     try:
         sources = _parse_sources_param(source)
+        retrieval_corpus = _normalize_corpus_param(corpus)
         search_request = SearchRequest(
             query=query,
             top_k=top_k,
             sources=sources,
             keyword_ranker=keyword_ranker,
+            retrieval_corpus=retrieval_corpus,
         )
         results = await hybrid_search_endpoint.run(search_request)
         logger.info(
@@ -205,14 +241,29 @@ async def search_graph(
         "adaptive",
         description="Graph hop policy mode: adaptive (default) or fixed.",
     ),
+    corpus: str = Query("summaries", description=CORPUS_PARAM_DESCRIPTION),
 ):
     logger.info(
         "Processing graph search request",
-        extra={"search": {"query": query, "top_k": top_k, "source": source, "hop_policy": hop_policy}},
+        extra={
+            "search": {
+                "query": query,
+                "top_k": top_k,
+                "source": source,
+                "hop_policy": hop_policy,
+                "corpus": corpus,
+            }
+        },
     )
     try:
         sources = _parse_sources_param(source)
-        search_request = SearchRequest(query=query, top_k=top_k, sources=sources)
+        retrieval_corpus = _normalize_corpus_param(corpus)
+        search_request = SearchRequest(
+            query=query,
+            top_k=top_k,
+            sources=sources,
+            retrieval_corpus=retrieval_corpus,
+        )
         results = await graph_search_endpoint.run(
             search_request,
             hop_policy_mode=hop_policy,
@@ -232,11 +283,24 @@ async def search_graph(
 
 
 @router.get("/sources")
-async def list_sources() -> dict:
+async def list_sources(corpus: str = Query("all", description=CORPUS_PARAM_DESCRIPTION)) -> dict:
     """Return the distinct indexed sources (repositories) for the UI selector."""
-    rows = await vector_search_endpoint.search_client.fetch(
-        "SELECT DISTINCT source FROM document_embeddings WHERE source IS NOT NULL ORDER BY source"
-    )
+    retrieval_corpus = _normalize_corpus_param(corpus)
+    if retrieval_corpus == "all":
+        rows = await vector_search_endpoint.search_client.fetch(
+            "SELECT DISTINCT source FROM document_embeddings WHERE source IS NOT NULL ORDER BY source"
+        )
+    else:
+        rows = await vector_search_endpoint.search_client.fetch(
+            """
+            SELECT DISTINCT source
+            FROM document_embeddings
+            WHERE source IS NOT NULL
+              AND COALESCE(metadata->>'retrieval_corpus', 'summaries') = $1
+            ORDER BY source
+            """,
+            retrieval_corpus,
+        )
     return {"sources": [r["source"] for r in rows]}
 
 
