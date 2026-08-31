@@ -165,13 +165,19 @@ def _build_html(nodes: list[dict], edges: list[dict]) -> str:
     .section-title {{ margin-top: 8px; font-weight: 600; }}
     .legend-item {{ display: block; margin: 2px 0; }}
     .swatch {{ width: 10px; height: 10px; display: inline-block; border-radius: 50%; margin-right: 6px; vertical-align: middle; }}
-    input[type="text"] {{ width: 95%; padding: 4px; }}
+    input[type="text"], select {{ width: 95%; padding: 4px; }}
   </style>
 </head>
 <body>
   <div id="controls">
     <div><b>Graph export viewer</b></div>
     <div class="row" id="counts"></div>
+    <div class="row">
+      <label for="service-filter">Service</label><br />
+      <select id="service-filter">
+        <option value="__all__">All services</option>
+      </select>
+    </div>
     <div class="row">
       <label for="search">Node search</label><br />
       <input id="search" type="text" placeholder="type part of a node label" />
@@ -194,6 +200,19 @@ def _build_html(nodes: list[dict], edges: list[dict]) -> str:
     const nodeTypeContainer = document.getElementById('node-types');
     const edgeTypeContainer = document.getElementById('edge-types');
     const countsEl = document.getElementById('counts');
+    const serviceFilterEl = document.getElementById('service-filter');
+
+    const services = allNodes
+      .filter(n => n.group === 'REPO')
+      .map(n => n.label)
+      .sort((a, b) => a.localeCompare(b));
+
+    services.forEach(service => {{
+      const option = document.createElement('option');
+      option.value = service;
+      option.textContent = service;
+      serviceFilterEl.appendChild(option);
+    }});
 
     function addCheckboxes(container, values, prefix, data) {{
       values.forEach(value => {{
@@ -228,12 +247,36 @@ def _build_html(nodes: list[dict], edges: list[dict]) -> str:
       }}));
     }}
 
+    function matchesService(node, service) {{
+      if (service === '__all__') {{
+        return true;
+      }}
+
+      const serviceLower = service.toLowerCase();
+      const idLower = (node.id || '').toLowerCase();
+      const labelLower = (node.label || '').toLowerCase();
+
+      if (labelLower === serviceLower) {{
+        return true;
+      }}
+
+      const tokenPatterns = [
+        `::${{serviceLower}}::`,
+        `::${{serviceLower}}`,
+        `${{serviceLower}}::`,
+        `/${{serviceLower}}/`,
+      ];
+
+      return tokenPatterns.some(pattern => idLower.includes(pattern) || labelLower.includes(pattern));
+    }}
+
     function refresh() {{
       const search = (document.getElementById('search').value || '').toLowerCase().trim();
+      const activeService = serviceFilterEl.value;
       const activeNodeTypes = selected('node', nodeTypes);
       const activeEdgeTypes = selected('edge', edgeTypes);
 
-      let nodes = allNodes.filter(n => activeNodeTypes.has(n.group));
+      let nodes = allNodes.filter(n => activeNodeTypes.has(n.group) && matchesService(n, activeService));
       if (search) {{
         nodes = nodes.filter(n => n.label.toLowerCase().includes(search) || n.id.toLowerCase().includes(search));
       }}
@@ -255,6 +298,7 @@ def _build_html(nodes: list[dict], edges: list[dict]) -> str:
     }}
 
     document.querySelectorAll('#controls input').forEach(el => el.addEventListener('input', refresh));
+    serviceFilterEl.addEventListener('change', refresh);
     refresh();
   </script>
 </body>
