@@ -226,14 +226,15 @@ def resolve_strategy_decision(
 
 def run_service_aware_strategy(
     *,
-    search: Callable[[str, str, int, tuple[str, ...]], list[ChunkT]],
+    search: Callable[[str, str, int, tuple[str, ...], str], list[ChunkT]],
     base_strategy: str,
     query_text: str,
     top_k: int,
     decision: ServiceAwareDecision,
+    retrieval_corpus: str,
 ) -> ServiceAwareStrategyResult:
     try:
-        chunks = search(base_strategy, query_text, top_k, decision.filter_services)
+        chunks = search(base_strategy, query_text, top_k, decision.filter_services, retrieval_corpus)
         if decision.metadata_mode == MetadataMode.BOOST:
             chunks = apply_service_boost(
                 chunks=chunks,
