@@ -52,6 +52,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+RETRIEVAL_CORPUS_SUMMARIES = "summaries"
+RETRIEVAL_CORPUS_CODE = "code"
+_RETRIEVAL_CORPUS_ALIASES = {
+    "summary": RETRIEVAL_CORPUS_SUMMARIES,
+    "summaries": RETRIEVAL_CORPUS_SUMMARIES,
+    "code": RETRIEVAL_CORPUS_CODE,
+    "source_code": RETRIEVAL_CORPUS_CODE,
+}
+
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
     if not value:
@@ -108,20 +117,40 @@ def split_summary(summary: str) -> tuple[str, str]:
     return embeddable_text, source_refs
 
 
-def build_document(file_entry: dict, source: str) -> Document:
+def build_document(file_entry: dict, source: str, retrieval_corpus: str) -> Document:
     file_path = file_entry["file_path"]
-    doc_id = hashlib.sha256(f"{source}::{file_path}".encode()).hexdigest()
+    doc_id = hashlib.sha256(f"{source}::{retrieval_corpus}::{file_path}".encode()).hexdigest()
     embeddable_text, source_refs = split_summary(file_entry.get("summary", ""))
+    if retrieval_corpus == RETRIEVAL_CORPUS_CODE:
+        index_text = str(file_entry.get("source_code", "") or "")
+        source_refs = ""
+    else:
+        index_text = embeddable_text
+
     return Document(
         id=doc_id,
         title=file_path,
-        text=embeddable_text,
+        text=index_text,
         source=source,
         url=file_entry.get("url", ""),
         source_code=file_entry.get("source_code", ""),
         last_modified_date=file_entry.get("last_modified") or None,
         source_refs=source_refs,
+        retrieval_corpus=retrieval_corpus,
     )
+
+
+def _resolve_retrieval_corpus() -> str:
+    raw_value = os.getenv("INDEXING_RETRIEVAL_CORPUS", RETRIEVAL_CORPUS_SUMMARIES)
+    token = str(raw_value).strip().lower()
+    resolved = _RETRIEVAL_CORPUS_ALIASES.get(token)
+    if resolved is None:
+        allowed = ", ".join(sorted(_RETRIEVAL_CORPUS_ALIASES))
+        raise ValueError(
+            f"Invalid INDEXING_RETRIEVAL_CORPUS={raw_value!r}. "
+            f"Allowed values: {allowed}."
+        )
+    return resolved
 
 
 def _graph_extraction_priority(file_path: str) -> int:
@@ -176,6 +205,7 @@ async def main() -> None:
     skip_unchanged = os.getenv("SKIP_UNCHANGED", "false").lower() == "true"
     graph_indexing_enabled = os.getenv("GRAPH_INDEXING_ENABLED", "true").lower() == "true"
     graph_only = os.getenv("GRAPH_ONLY", "false").lower() == "true"
+    retrieval_corpus = _resolve_retrieval_corpus()
     summary_files = _get_summary_files()
 
     db = ConnectionManager()
@@ -196,6 +226,7 @@ async def main() -> None:
     graph_indexer = GraphIndexer(db)
     logger.info(f"Graph-only mode: {graph_only}")
     logger.info(f"Graph indexing enabled: {graph_indexing_enabled}")
+    logger.info(f"Vector retrieval corpus mode: {retrieval_corpus}")
 
     try:
         for summaries_file in summary_files:
@@ -219,7 +250,7 @@ async def main() -> None:
                 await graph_indexer.upsert_service_node(source)
 
             for i, file_entry in enumerate(files, start=1):
-                doc = build_document(file_entry, source)
+                doc = build_document(file_entry, source, retrieval_corpus)
 
                 if graph_indexing_enabled:
                     source_path = str(file_entry.get("file_path", ""))
@@ -248,7 +279,7 @@ async def main() -> None:
                     continue
 
                 if not doc.text.strip():
-                    logger.warning(f"Skipping empty summary: {doc.title}")
+                    logger.warning(f"Skipping empty {retrieval_corpus} text: {doc.title}")
                     continue
 
                 if skip_unchanged:

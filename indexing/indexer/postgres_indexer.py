@@ -70,7 +70,12 @@ class PostgresIndexer:
         batch = []
         for c in chunks:
             vec_text = "[" + ",".join(str(v) for v in c.embedding) + "]"
-            meta = json.dumps({**c.chunk.metadata, "embedding_model": c.embedding_model})
+            meta_payload = {
+                **c.chunk.metadata,
+                "embedding_model": c.embedding_model,
+                "retrieval_corpus": c.chunk.document.retrieval_corpus,
+            }
+            meta = json.dumps(meta_payload)
             batch.append((
                 c.chunk.chunk_id,                           # $1 chunk_id
                 c.chunk.text.replace("\x00", ""),           # $2 text

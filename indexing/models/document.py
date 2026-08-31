@@ -12,6 +12,7 @@ class Document:
     source_code: str = ""
     last_modified_date: Optional[str] = None
     source_refs: str = ""
+    retrieval_corpus: str = "summaries"
 
 
 @dataclass

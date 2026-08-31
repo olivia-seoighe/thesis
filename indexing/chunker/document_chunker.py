@@ -25,7 +25,10 @@ class DocumentChunker:
         chunks = []
         for idx, window in enumerate(windows, start=1):
             content = " ".join(window)
-            prefix = f"TITLE: {doc.title} | SOURCE: {doc.source} | PART: {idx} of {total} | CONTENT: "
+            prefix = (
+                f"TITLE: {doc.title} | SOURCE: {doc.source} | CORPUS: {doc.retrieval_corpus} "
+                f"| PART: {idx} of {total} | CONTENT: "
+            )
             text = prefix + content
 
             chunk_id = hashlib.sha256(f"{doc.id}::{idx}".encode()).hexdigest()
@@ -36,6 +39,7 @@ class DocumentChunker:
                 "chunk_size": self.chunk_size,
                 "overlap": self.overlap,
                 "document_url": doc.url,
+                "retrieval_corpus": doc.retrieval_corpus,
             }
 
             chunks.append(
