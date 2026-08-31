@@ -48,6 +48,17 @@ def parse_strategies(raw_value: str) -> tuple[str, ...]:
     return tuple(values) if values else DEFAULT_STRATEGIES
 
 
+def parse_retrieval_corpus(raw_value: str) -> str:
+    token = raw_value.strip().lower()
+    if token in {"summary", "summaries"}:
+        return "summaries"
+    if token in {"code", "source_code"}:
+        return "code"
+    if token == "all":
+        return "all"
+    raise ValueError("--retrieval-corpus must be one of: summaries, code, all")
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments for retrieval baseline runs."""
 
@@ -114,6 +125,12 @@ def parse_args() -> argparse.Namespace:
             "otherwise evaluator uses retrieval /sources as the catalogue."
         ),
     )
+    parser.add_argument(
+        "--retrieval-corpus",
+        type=str,
+        default="summaries",
+        help="Retrieval corpus selector: summaries (default), code, or all.",
+    )
     return parser.parse_args()
 
 
@@ -123,6 +140,7 @@ def main() -> None:
     args = parse_args()
     k_values = parse_k_values(args.k_values)
     strategies = parse_strategies(args.strategies)
+    retrieval_corpus = parse_retrieval_corpus(args.retrieval_corpus)
 
     evaluator = RetrievalBaselineEvaluator(
         dataset_dir=args.dataset_dir,
@@ -131,6 +149,7 @@ def main() -> None:
         k_values=k_values,
         timeout_seconds=args.timeout_seconds,
         service_catalogue_path=args.service_catalogue,
+        retrieval_corpus=retrieval_corpus,
     )
 
     result = evaluator.run(

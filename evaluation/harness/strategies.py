@@ -40,9 +40,10 @@ class StrategyRunner:
         "graph-fixed": "/search/graph",
     }
 
-    def __init__(self, base_url: str, timeout_seconds: int = 60) -> None:
+    def __init__(self, base_url: str, timeout_seconds: int = 60, retrieval_corpus: str = "summaries") -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.retrieval_corpus = retrieval_corpus
 
     def search(
         self,
@@ -50,6 +51,7 @@ class StrategyRunner:
         query_text: str,
         top_k: int,
         sources: tuple[str, ...] = (),
+        retrieval_corpus: str = "summaries",
     ) -> list[StrategyResponseChunk]:
         endpoint = self.ENDPOINTS.get(strategy)
         if endpoint is None:
@@ -61,6 +63,7 @@ class StrategyRunner:
         }
         if sources:
             params["source"] = ",".join(sources)
+        params["corpus"] = retrieval_corpus
         if strategy in {"graph", "graph-fixed"}:
             params["hop_policy"] = "fixed"
         elif strategy == "graph-adaptive":
@@ -91,8 +94,9 @@ class StrategyRunner:
 
         return self._extract_chunks(payload, strategy)
 
-    def list_sources(self) -> tuple[str, ...]:
-        url = f"{self.base_url}/sources"
+    def list_sources(self, retrieval_corpus: str | None = None) -> tuple[str, ...]:
+        corpus = retrieval_corpus or self.retrieval_corpus
+        url = f"{self.base_url}/sources?{urlencode({'corpus': corpus})}"
         request = Request(url=url, method="GET")
 
         try:

@@ -41,6 +41,7 @@ class RetrievalBaselineEvaluator:
         k_values: tuple[int, ...],
         timeout_seconds: int,
         service_catalogue_path: Path | None,
+        retrieval_corpus: str,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.retrieval_url = retrieval_url
@@ -48,8 +49,13 @@ class RetrievalBaselineEvaluator:
         self.k_values = tuple(sorted(set(k_values)))
         self.timeout_seconds = timeout_seconds
         self.service_catalogue_path = service_catalogue_path
+        self.retrieval_corpus = retrieval_corpus
         self.metrics = MetricsCalculator()
-        self.strategy_runner = StrategyRunner(retrieval_url, timeout_seconds=timeout_seconds)
+        self.strategy_runner = StrategyRunner(
+            retrieval_url,
+            timeout_seconds=timeout_seconds,
+            retrieval_corpus=retrieval_corpus,
+        )
 
     def run(self, results_dir: Path, run_writer_cls: Any, limit: int | None = None) -> EvaluationRunResult:
         queries = self._load_jsonl(self.dataset_dir / "queries_v1.jsonl")
@@ -63,7 +69,7 @@ class RetrievalBaselineEvaluator:
         has_service_aware_variant = any(strategy.endswith(SERVICE_AWARE_SUFFIX) for strategy in self.strategies)
         planner = (
             build_service_planner(
-                list_sources=self.strategy_runner.list_sources,
+                list_sources=lambda: self.strategy_runner.list_sources(self.retrieval_corpus),
                 service_catalogue_path=self.service_catalogue_path,
             )
             if has_service_aware_variant
@@ -86,6 +92,7 @@ class RetrievalBaselineEvaluator:
                 "service_aware_enabled": has_service_aware_variant,
                 "metadata_boost_mode": "rrf",
                 "service_catalogue_path": str(self.service_catalogue_path) if self.service_catalogue_path else "retrieval:/sources",
+                "retrieval_corpus": self.retrieval_corpus,
             },
         )
 
@@ -131,6 +138,7 @@ class RetrievalBaselineEvaluator:
                 query_text=query_text,
                 decision=execution_decision,
                 top_k=max(self.k_values),
+                retrieval_corpus=self.retrieval_corpus,
             )
             keyword_ranker = self._resolve_keyword_ranker(strategy, outcome.chunks)
             keyword_model_used = self._resolve_keyword_model_used(outcome.chunks)
