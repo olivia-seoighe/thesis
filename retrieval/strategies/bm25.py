@@ -142,6 +142,7 @@ class BM25Index:
         query: str,
         top_k: int,
         sources: Sequence[str] | None,
+        retrieval_corpus: str,
         max_chunks_per_document: int | None,
         match_all: bool,
     ) -> list[BM25SearchHit]:
@@ -154,17 +155,31 @@ class BM25Index:
 
         unique_terms = tuple(dict.fromkeys(query_terms))
         allowed_sources = {source.strip() for source in (sources or []) if source.strip()}
-
-        if allowed_sources:
-            scoped_count = sum(self._source_doc_counts.get(source, 0) for source in allowed_sources)
-            if scoped_count == 0:
-                return []
-            scoped_total_len = sum(self._source_total_lengths.get(source, 0) for source in allowed_sources)
-            avgdl = scoped_total_len / scoped_count if scoped_count else 0.0
-            corpus_size = scoped_count
+        corpus_token = retrieval_corpus.strip().lower() if retrieval_corpus else "summaries"
+        if corpus_token in {"summary", "summaries"}:
+            corpus_token = "summaries"
+        elif corpus_token in {"source_code", "code"}:
+            corpus_token = "code"
+        elif corpus_token == "all":
+            corpus_token = "all"
         else:
-            corpus_size = self._total_docs
-            avgdl = self._avgdl
+            corpus_token = "summaries"
+
+        def _in_scope(document: BM25Document) -> bool:
+            if allowed_sources and document.source not in allowed_sources:
+                return False
+            if corpus_token == "all":
+                return True
+            document_corpus = str(document.metadata.get("retrieval_corpus") or "summaries").strip().lower()
+            return document_corpus == corpus_token
+
+        scoped_documents = [document for document in self._documents if _in_scope(document)]
+        corpus_size = len(scoped_documents)
+        avgdl = (
+            sum(document.doc_len for document in scoped_documents) / corpus_size
+            if corpus_size
+            else 0.0
+        )
 
         if corpus_size == 0 or avgdl <= 0:
             return []
@@ -176,15 +191,23 @@ class BM25Index:
                 term_doc_freq_in_scope[term] = sum(
                     1
                     for idx in postings
-                    if self._documents[idx].source in allowed_sources
+                    if _in_scope(self._documents[idx])
                 )
             else:
-                term_doc_freq_in_scope[term] = self._doc_freq.get(term, 0)
+                if corpus_token == "all":
+                    term_doc_freq_in_scope[term] = self._doc_freq.get(term, 0)
+                else:
+                    term_doc_freq_in_scope[term] = sum(
+                        1
+                        for idx in self._postings.get(term, [])
+                        if _in_scope(self._documents[idx])
+                    )
 
         candidate_indices: set[int] = set()
         for term in unique_terms:
             for idx in self._postings.get(term, []):
-                if allowed_sources and self._documents[idx].source not in allowed_sources:
+                document = self._documents[idx]
+                if not _in_scope(document):
                     continue
                 candidate_indices.add(idx)
 
@@ -196,7 +219,7 @@ class BM25Index:
             for term in unique_terms:
                 for idx in self._postings.get(term, []):
                     doc = self._documents[idx]
-                    if allowed_sources and doc.source not in allowed_sources:
+                    if not _in_scope(doc):
                         continue
                     doc_coverage.setdefault(doc.document_id, set()).add(term)
             qualifying_docs = {
