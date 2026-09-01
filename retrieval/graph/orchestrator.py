@@ -123,7 +123,7 @@ class GraphClient:
             return self._empty_response(request=request, start_time=start_time)
 
         evidence_start = time.time()
-        evidence_spec = build_evidence_query(candidate_node_keys)
+        evidence_spec = build_evidence_query(candidate_node_keys, request.retrieval_corpus)
         evidence_rows = await self.cm.fetch(evidence_spec.query, *evidence_spec.args)
         evidence_ms = (time.time() - evidence_start) * 1000
 

@@ -156,7 +156,7 @@ def build_frontier_expansion_query(
     return CypherSpec(query=sql, args=(params, edge_limit))
 
 
-def build_evidence_query(node_or_edge_ids: list[str]) -> CypherSpec:
+def build_evidence_query(node_or_edge_ids: list[str], retrieval_corpus: str) -> CypherSpec:
     sql = f"""
         WITH resolved_nodes AS (
             SELECT DISTINCT TRIM(BOTH '"' FROM node_key::text) AS node_key
@@ -232,17 +232,19 @@ def build_evidence_query(node_or_edge_ids: list[str]) -> CypherSpec:
             SELECT chunk_id
             FROM document_embeddings de2
             WHERE de2.document_id = re.document_id
+              AND de2.retrieval_corpus = $2
             ORDER BY de2.chunk_id
             LIMIT 1
         ) fallback ON TRUE
         JOIN document_embeddings de
           ON de.chunk_id = COALESCE(re.chunk_id, fallback.chunk_id)
+          AND de.retrieval_corpus = $2
         JOIN evidence_stats es ON es.node_key = re.node_key
-        LEFT JOIN document_metadata dm ON dm.document_id = de.document_id
+        LEFT JOIN document_metadata dm ON dm.document_id = de.document_id AND dm.retrieval_corpus = de.retrieval_corpus
         WHERE re.rn <= 5
     """
     params = _agtype_param({"node_keys": node_or_edge_ids})
-    return CypherSpec(query=sql, args=(params,))
+    return CypherSpec(query=sql, args=(params, retrieval_corpus))
 
 
 def _agtype_param(payload: dict) -> str:
