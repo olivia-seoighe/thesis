@@ -296,7 +296,7 @@ async def list_sources(corpus: str = Query("all", description=CORPUS_PARAM_DESCR
             SELECT DISTINCT source
             FROM document_embeddings
             WHERE source IS NOT NULL
-              AND COALESCE(metadata->>'retrieval_corpus', 'summaries') = $1
+              AND retrieval_corpus = $1
             ORDER BY source
             """,
             retrieval_corpus,

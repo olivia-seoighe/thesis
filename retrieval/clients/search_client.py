@@ -220,7 +220,7 @@ class SearchClient:
                                         FROM document_embeddings
                                         WHERE source = $2
                                           AND embedding_3072 IS NOT NULL
-                                          AND COALESCE(metadata->>'retrieval_corpus', 'summaries') = $4
+                                          AND retrieval_corpus = $4
                                           AND (
                                             document_title ILIKE $5
                                             OR tsv @@ to_tsquery('english', $6)
@@ -241,7 +241,7 @@ class SearchClient:
                                         f.score
                                     FROM filtered f
                                     JOIN document_embeddings de ON de.chunk_id = f.chunk_id
-                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                     ORDER BY f.score DESC;
                                 """
                             else:
@@ -278,7 +278,7 @@ class SearchClient:
                                         f.score
                                     FROM filtered f
                                     JOIN document_embeddings de ON de.chunk_id = f.chunk_id
-                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                     ORDER BY f.score DESC;
                                 """
                         else:
@@ -291,7 +291,7 @@ class SearchClient:
                                         FROM document_embeddings
                                         WHERE source = $2
                                           AND embedding_3072 IS NOT NULL
-                                          AND COALESCE(metadata->>'retrieval_corpus', 'summaries') = $4
+                                          AND retrieval_corpus = $4
                                         ORDER BY embedding_3072 <=> $1::halfvec ASC
                                         LIMIT $3
                                     )
@@ -308,7 +308,7 @@ class SearchClient:
                                         1 - n.distance AS score
                                     FROM nearest n
                                     JOIN document_embeddings de ON de.chunk_id = n.chunk_id
-                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                     ORDER BY n.distance ASC;
                                 """
                             else:
@@ -337,7 +337,7 @@ class SearchClient:
                                         1 - n.distance AS score
                                     FROM nearest n
                                     JOIN document_embeddings de ON de.chunk_id = n.chunk_id
-                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                     ORDER BY n.distance ASC;
                                 """
 
@@ -363,7 +363,7 @@ class SearchClient:
                                            1 - (embedding_3072 <=> $1::halfvec) AS score
                                     FROM document_embeddings
                                     WHERE embedding_3072 IS NOT NULL
-                                      AND COALESCE(metadata->>'retrieval_corpus', 'summaries') = $3
+                                      AND retrieval_corpus = $3
                                       AND (
                                         document_title ILIKE $4
                                         OR tsv @@ to_tsquery('english', $5)
@@ -384,7 +384,7 @@ class SearchClient:
                                     f.score
                                 FROM filtered f
                                 JOIN document_embeddings de ON de.chunk_id = f.chunk_id
-                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                 ORDER BY f.score DESC;
                             """
                         else:
@@ -415,7 +415,7 @@ class SearchClient:
                                     f.score
                                 FROM filtered f
                                 JOIN document_embeddings de ON de.chunk_id = f.chunk_id
-                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                 ORDER BY f.score DESC;
                             """
                     else:
@@ -427,7 +427,7 @@ class SearchClient:
                                            embedding_3072 <=> $1::halfvec AS distance
                                     FROM document_embeddings
                                     WHERE embedding_3072 IS NOT NULL
-                                      AND COALESCE(metadata->>'retrieval_corpus', 'summaries') = $3
+                                      AND retrieval_corpus = $3
                                     ORDER BY embedding_3072 <=> $1::halfvec ASC
                                     LIMIT $2
                                 )
@@ -444,7 +444,7 @@ class SearchClient:
                                     1 - n.distance AS score
                                 FROM nearest n
                                 JOIN document_embeddings de ON de.chunk_id = n.chunk_id
-                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                 ORDER BY n.distance ASC;
                             """
                         else:
@@ -471,7 +471,7 @@ class SearchClient:
                                     1 - n.distance AS score
                                 FROM nearest n
                                 JOIN document_embeddings de ON de.chunk_id = n.chunk_id
-                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                 ORDER BY n.distance ASC;
                             """
                     rows = await conn.fetch(sql, *query_params)
@@ -557,11 +557,7 @@ class SearchClient:
         concept_tsqueries = [_term_to_tsquery(c) for c in query_concepts]
 
         source_predicate = "source = $2" if source is not None else ""
-        corpus_predicate = (
-            "COALESCE(metadata->>'retrieval_corpus', 'summaries') = $3"
-            if source is not None
-            else "COALESCE(metadata->>'retrieval_corpus', 'summaries') = $2"
-        )
+        corpus_predicate = "retrieval_corpus = $3" if source is not None else "retrieval_corpus = $2"
         intersect_parts: list[str] = []
         for tsq in concept_tsqueries:
             where_predicates = [corpus_predicate, f"tsv @@ to_tsquery('english', '{tsq}')"]
@@ -597,12 +593,12 @@ class SearchClient:
             top_k_param = "$4"
             max_chunks_param = "$5"
             chunk_terms_source_filter = "AND de.source = $2"
-            chunk_terms_corpus_filter = "AND COALESCE(de.metadata->>'retrieval_corpus', 'summaries') = $3"
+            chunk_terms_corpus_filter = "AND de.retrieval_corpus = $3"
         else:
             top_k_param = "$3"
             max_chunks_param = "$4"
             chunk_terms_source_filter = ""
-            chunk_terms_corpus_filter = "AND COALESCE(de.metadata->>'retrieval_corpus', 'summaries') = $2"
+            chunk_terms_corpus_filter = "AND de.retrieval_corpus = $2"
 
         if max_chunks_per_document is not None:
             tail_sql = f""",
@@ -639,7 +635,7 @@ class SearchClient:
                     ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS base_score,
                     {term_check_sql}
                 FROM document_embeddings de
-                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                 JOIN qualifying_docs qd ON de.document_id = qd.document_id
                 WHERE de.tsv @@ to_tsquery('english', $1)
                   {chunk_terms_source_filter}
@@ -685,9 +681,10 @@ class SearchClient:
                 dm.url,
                 (de.metadata)::jsonb AS metadata,
                 de.source,
+                de.retrieval_corpus,
                 dm.last_modified_date
             FROM document_embeddings de
-            LEFT JOIN document_metadata dm ON de.document_id = dm.document_id;
+            LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus;
         """
         return await self.fetch(sql)
 
@@ -751,9 +748,9 @@ class SearchClient:
                                             de.source, dm.last_modified_date,
                                             ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
                                         FROM document_embeddings de
-                                        LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                        LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                         WHERE de.source = $2
-                                          AND COALESCE(de.metadata->>'retrieval_corpus', 'summaries') = $5
+                                          AND de.retrieval_corpus = $5
                                           AND de.tsv IS NOT NULL
                                           AND de.tsv @@ to_tsquery('english', $1)
                                     ),
@@ -785,9 +782,9 @@ class SearchClient:
                                         de.source, dm.last_modified_date,
                                         ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
                                     FROM document_embeddings de
-                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
+                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
                                     WHERE de.source = $2
-                                      AND COALESCE(de.metadata->>'retrieval_corpus', 'summaries') = $4
+                                      AND de.retrieval_corpus = $4
                                       AND de.tsv IS NOT NULL
                                       AND de.tsv @@ to_tsquery('english', $1)
                                     ORDER BY score DESC
@@ -824,8 +821,8 @@ class SearchClient:
                                         de.source, dm.last_modified_date,
                                         ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
                                     FROM document_embeddings de
-                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
-                                    WHERE COALESCE(de.metadata->>'retrieval_corpus', 'summaries') = $4
+                                    LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
+                                    WHERE de.retrieval_corpus = $4
                                       AND de.tsv IS NOT NULL
                                       AND de.tsv @@ to_tsquery('english', $1)
                                 ),
@@ -859,8 +856,8 @@ class SearchClient:
                                     de.source, dm.last_modified_date,
                                     ts_rank_cd(de.tsv, to_tsquery('english', $1), 32) AS score
                                 FROM document_embeddings de
-                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id
-                                WHERE COALESCE(de.metadata->>'retrieval_corpus', 'summaries') = $3
+                                LEFT JOIN document_metadata dm ON de.document_id = dm.document_id AND de.retrieval_corpus = dm.retrieval_corpus
+                                WHERE de.retrieval_corpus = $3
                                   AND de.tsv IS NOT NULL
                                   AND de.tsv @@ to_tsquery('english', $1)
                                 ORDER BY score DESC

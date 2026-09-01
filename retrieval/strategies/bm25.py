@@ -24,6 +24,7 @@ class BM25Document:
     url: str
     metadata: dict[str, Any]
     source: str
+    retrieval_corpus: str
     last_modified_date: str
     tokens: tuple[str, ...]
     term_freq: dict[str, int]
@@ -170,7 +171,7 @@ class BM25Index:
                 return False
             if corpus_token == "all":
                 return True
-            document_corpus = str(document.metadata.get("retrieval_corpus") or "summaries").strip().lower()
+            document_corpus = (document.retrieval_corpus or "summaries").strip().lower()
             return document_corpus == corpus_token
 
         scoped_documents = [document for document in self._documents if _in_scope(document)]
@@ -298,6 +299,7 @@ class BM25Index:
                 url=str(row.get("url") or ""),
                 metadata=metadata,
                 source=source,
+                retrieval_corpus=str(row.get("retrieval_corpus") or "summaries"),
                 last_modified_date=str(row.get("last_modified_date") or ""),
                 tokens=tuple(tokens),
                 term_freq=dict(term_counts),
