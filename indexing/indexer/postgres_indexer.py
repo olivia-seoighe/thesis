@@ -1,4 +1,3 @@
-import json
 import logging
 from datetime import datetime
 
@@ -9,13 +8,13 @@ log = logging.getLogger(__name__)
 
 INSERT_CHUNK_SQL = """
     INSERT INTO document_embeddings
-        (chunk_id, text, source_code, document_id, document_title, embedding_3072, tsv, metadata, source)
+        (chunk_id, text, source_code, document_id, document_title, embedding_3072, tsv, metadata, source, retrieval_corpus)
     VALUES (
         $1, $2, $3, $4, $5,
         $6::halfvec,
         setweight(to_tsvector('english', coalesce($2, '')), 'A') ||
         setweight(to_tsvector('english', coalesce($5, '')), 'B'),
-        $7::jsonb, $8
+        $7::jsonb, $8, $9
     )
     ON CONFLICT (chunk_id) DO UPDATE SET
         text            = EXCLUDED.text,
@@ -25,13 +24,14 @@ INSERT_CHUNK_SQL = """
         embedding_3072  = EXCLUDED.embedding_3072,
         tsv             = EXCLUDED.tsv,
         metadata        = EXCLUDED.metadata,
-        source          = EXCLUDED.source
+        source          = EXCLUDED.source,
+        retrieval_corpus = EXCLUDED.retrieval_corpus
 """
 
 UPSERT_METADATA_SQL = """
-    INSERT INTO document_metadata (document_id, name, url, source, last_modified_date, source_refs)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT (document_id) DO UPDATE SET
+    INSERT INTO document_metadata (document_id, name, url, source, last_modified_date, source_refs, retrieval_corpus)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (document_id, retrieval_corpus) DO UPDATE SET
         name               = EXCLUDED.name,
         url                = EXCLUDED.url,
         last_modified_date = EXCLUDED.last_modified_date,
@@ -53,14 +53,16 @@ class PostgresIndexer:
             doc.source,
             doc.last_modified_date,
             doc.source_refs or None,
+            doc.retrieval_corpus,
         )
         log.debug(f"Upserted metadata for {doc.title}")
 
-    async def get_last_indexed_at(self, document_id: str) -> datetime | None:
-        """Return last indexed timestamp for a document, if present."""
+    async def get_last_indexed_at(self, document_id: str, retrieval_corpus: str) -> datetime | None:
+        """Return last indexed timestamp for a document in a given corpus, if present."""
         return await self.cm.fetchval(
-            "SELECT last_indexed_at FROM document_metadata WHERE document_id = $1",
+            "SELECT last_indexed_at FROM document_metadata WHERE document_id = $1 AND retrieval_corpus = $2",
             document_id,
+            retrieval_corpus,
         )
 
     async def add_chunks(self, chunks: list[EmbeddedDocumentChunk]) -> None:
@@ -73,9 +75,7 @@ class PostgresIndexer:
             meta_payload = {
                 **c.chunk.metadata,
                 "embedding_model": c.embedding_model,
-                "retrieval_corpus": c.chunk.document.retrieval_corpus,
             }
-            meta = json.dumps(meta_payload)
             batch.append((
                 c.chunk.chunk_id,                           # $1 chunk_id
                 c.chunk.text.replace("\x00", ""),           # $2 text
@@ -83,20 +83,23 @@ class PostgresIndexer:
                 c.chunk.document.id,                        # $4 document_id
                 c.chunk.document.title.strip(),             # $5 document_title
                 vec_text,                                   # $6 embedding_3072
-                meta,                                       # $7 metadata
+                meta_payload,                                # $7 metadata (asyncpg codec encodes once)
                 c.chunk.document.source,                    # $8 source
+                c.chunk.document.retrieval_corpus,          # $9 retrieval_corpus
             ))
 
         await self.cm.executemany(INSERT_CHUNK_SQL, batch)
         log.info(f"Inserted {len(batch)} chunks")
 
-    async def delete_document_chunks(self, document_id: str) -> None:
+    async def delete_document_chunks(self, document_id: str, retrieval_corpus: str) -> None:
         await self.cm.execute(
-            "DELETE FROM document_embeddings WHERE document_id = $1", document_id
+            "DELETE FROM document_embeddings WHERE document_id = $1 AND retrieval_corpus = $2",
+            document_id,
+            retrieval_corpus,
         )
 
     async def replace_document(self, doc: Document, chunks: list[EmbeddedDocumentChunk]) -> None:
         """Replace one document's indexed content: delete old chunks, then upsert and insert."""
-        await self.delete_document_chunks(doc.id)
+        await self.delete_document_chunks(doc.id, doc.retrieval_corpus)
         await self.upsert_document_metadata(doc)
         await self.add_chunks(chunks)

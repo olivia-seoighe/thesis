@@ -31,7 +31,9 @@ class DocumentChunker:
             )
             text = prefix + content
 
-            chunk_id = hashlib.sha256(f"{doc.id}::{idx}".encode()).hexdigest()
+            chunk_id = hashlib.sha256(
+                f"{doc.id}::{doc.retrieval_corpus}::{idx}".encode()
+            ).hexdigest()
 
             metadata = {
                 "chunk_index": idx,
@@ -39,7 +41,6 @@ class DocumentChunker:
                 "chunk_size": self.chunk_size,
                 "overlap": self.overlap,
                 "document_url": doc.url,
-                "retrieval_corpus": doc.retrieval_corpus,
             }
 
             chunks.append(

@@ -119,7 +119,7 @@ def split_summary(summary: str) -> tuple[str, str]:
 
 def build_document(file_entry: dict, source: str, retrieval_corpus: str) -> Document:
     file_path = file_entry["file_path"]
-    doc_id = hashlib.sha256(f"{source}::{retrieval_corpus}::{file_path}".encode()).hexdigest()
+    doc_id = hashlib.sha256(f"{source}::{file_path}".encode()).hexdigest()
     embeddable_text, source_refs = split_summary(file_entry.get("summary", ""))
     if retrieval_corpus == RETRIEVAL_CORPUS_CODE:
         index_text = str(file_entry.get("source_code", "") or "")
@@ -285,7 +285,7 @@ async def main() -> None:
                 if skip_unchanged:
                     if indexer is None:
                         raise RuntimeError("Vector indexer is not initialized")
-                    last_indexed_at = await indexer.get_last_indexed_at(doc.id)
+                    last_indexed_at = await indexer.get_last_indexed_at(doc.id, doc.retrieval_corpus)
                     last_modified = _parse_iso_datetime(doc.last_modified_date)
                     if last_indexed_at and last_modified and _is_unchanged(last_modified, last_indexed_at):
                         logger.info(f"[{i}/{len(files)}] Skipping unchanged: {doc.title}")
