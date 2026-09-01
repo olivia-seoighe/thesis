@@ -92,13 +92,15 @@ CREATE INDEX IF NOT EXISTS idx_gee_tier ON graph_edge_evidence (tier);
 CREATE INDEX IF NOT EXISTS idx_gee_observed_at ON graph_edge_evidence (observed_at);
 
 CREATE TABLE IF NOT EXISTS document_metadata (
-    document_id        TEXT PRIMARY KEY,
+    document_id        TEXT NOT NULL,
+    retrieval_corpus    TEXT NOT NULL,
     name               TEXT,
     url                TEXT,
     source             TEXT,
     last_modified_date TIMESTAMPTZ,
     last_indexed_at    TIMESTAMPTZ DEFAULT NOW(),
-    source_refs        TEXT        
+    source_refs        TEXT        ,
+    PRIMARY KEY (document_id, retrieval_corpus)
 );
 
 
@@ -117,11 +119,13 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
     embedding_3072      halfvec(:embedding_dim),
     tsv            tsvector,
     metadata       JSONB,
-    source         TEXT
+    source         TEXT,
+    retrieval_corpus TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_de_source    ON document_embeddings (source); -- Filtering indexes
 CREATE INDEX IF NOT EXISTS idx_de_document  ON document_embeddings (document_id); -- Filtering indexes
+CREATE INDEX IF NOT EXISTS idx_de_corpus    ON document_embeddings (retrieval_corpus); -- Filtering indexes
 CREATE INDEX IF NOT EXISTS idx_dm_source    ON document_metadata (source); -- Filtering indexes
 CREATE INDEX IF NOT EXISTS idx_de_tsv       ON document_embeddings USING GIN (tsv) WITH (fastupdate = on); -- Index for keyword search (GIN on tsvector) -- fastupdate improves bulk-insert throughput
 CREATE INDEX IF NOT EXISTS idx_de_embedding_hnsw ON document_embeddings -- Indexes for vector search, HNSW  for approximate nearest-neighbour vector search
@@ -131,7 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_de_embedding_hnsw ON document_embeddings -- Index
 -- Foreign key relationship
 ALTER TABLE document_embeddings
     ADD CONSTRAINT fk_embeddings_document_id
-    FOREIGN KEY (document_id) REFERENCES document_metadata(document_id)
+    FOREIGN KEY (document_id, retrieval_corpus) REFERENCES document_metadata(document_id, retrieval_corpus)
     ON DELETE CASCADE;
 
 -- Conversation history (persisted so history survives service restarts)
