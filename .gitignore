@@ -16,4 +16,6 @@ graph_exports/
 service_acronyms.json
 retrieval/tests
 results/
+evaluation/results/
 research_utils/
+archive/
