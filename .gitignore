@@ -7,8 +7,11 @@ config.yaml
 .venv/
 __pycache__/
 golden_queries.json
+golden_queries2.json
 golden_queries.csv
 datasets/
 graph_exports/
 service_acronyms.json
 retrieval/tests
+results/
+research_utils/
