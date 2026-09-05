@@ -2,30 +2,26 @@ import { useEffect, useState } from 'react'
 import { deleteConversation, getConversation, listConversations } from './api/client'
 import ChatInterface from './components/ChatInterface'
 import ConversationSidebar from './components/ConversationSidebar'
-import EmbeddingViz from './components/EmbeddingViz'
 import type { Conversation, Message } from './types'
-
-type Tab = 'chat' | 'viz'
 
 export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
   const [activeMessages, setActiveMessages] = useState<Message[]>([])
-  const [activeTab, setActiveTab] = useState<Tab>('chat')
   const [mountKey, setMountKey] = useState(0)
 
   useEffect(() => {
-    listConversations().then(setConversations).catch(() => {})
+    listConversations().then(setConversations).catch(console.error)
   }, [])
 
   const handleSelect = async (id: string) => {
     setMountKey(k => k + 1)
     setActiveConvId(id)
-    setActiveTab('chat')
     try {
       const conv = await getConversation(id)
       setActiveMessages(conv.messages)
-    } catch {
+    } catch (error) {
+      console.error(error)
       setActiveMessages([])
     }
   }
@@ -34,11 +30,10 @@ export default function App() {
     setMountKey(k => k + 1)
     setActiveConvId(null)
     setActiveMessages([])
-    setActiveTab('chat')
   }
 
   const handleDelete = async (id: string) => {
-    await deleteConversation(id).catch(() => {})
+    await deleteConversation(id).catch(console.error)
     setConversations(prev => prev.filter(c => c.id !== id))
     if (activeConvId === id) handleNew()
   }
@@ -75,41 +70,15 @@ export default function App() {
               {activeConvId ? 'Conversation' : 'New conversation'}
             </span>
           </div>
-          <nav style={{ display: 'flex', gap: 0 }}>
-            {(['chat', 'viz'] as Tab[]).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                style={{
-                  border: 'none',
-                  borderBottom: activeTab === tab ? '2px solid #00A7B3' : '2px solid transparent',
-                  background: 'none',
-                  padding: '14px 18px 12px',
-                  cursor: 'pointer',
-                  fontWeight: activeTab === tab ? 700 : 400,
-                  color: activeTab === tab ? '#00A7B3' : '#64748b',
-                  fontSize: 14,
-                  transition: 'all 0.15s',
-                }}
-              >
-                {tab === 'chat' ? '💬 Chat' : '📊 Embeddings'}
-              </button>
-            ))}
-          </nav>
         </header>
 
-        {/* Content */}
         <div style={{ flex: 1, overflow: 'hidden' }}>
-          {activeTab === 'chat' ? (
-            <ChatInterface
-              key={mountKey}
-              conversationId={activeConvId}
-              initialMessages={activeMessages}
-              onConversationCreated={handleConversationCreated}
-            />
-          ) : (
-            <EmbeddingViz />
-          )}
+          <ChatInterface
+            key={mountKey}
+            conversationId={activeConvId}
+            initialMessages={activeMessages}
+            onConversationCreated={handleConversationCreated}
+          />
         </div>
       </main>
     </div>

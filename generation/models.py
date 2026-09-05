@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class QueryRequest(BaseModel):
@@ -30,10 +30,6 @@ class QueryResponse(BaseModel):
     latency_ms: float
     retrieval_latency_ms: float
     generation_latency_ms: float
-    decomposition_used: bool = False
-    decomposition_reason: str = ""
-    decomposition_branches: List[str] = Field(default_factory=list)
-    branch_result_counts: Dict[str, int] = Field(default_factory=dict)
 
 
 class Message(BaseModel):
@@ -48,19 +44,3 @@ class Conversation(BaseModel):
     title: str
     messages: List[Message]
     created_at: str
-
-
-class EmbeddingPoint(BaseModel):
-    """A single point in the 2-D embedding visualisation."""
-    id: str
-    label: str
-    x: float
-    y: float
-    score: float
-    type: str       # "query" | "chunk"
-    source: str = ""
-
-
-class VizResponse(BaseModel):
-    points: List[EmbeddingPoint]
-    note: str = ""

@@ -30,18 +30,3 @@ export interface QueryResponse {
   retrieval_latency_ms: number
   generation_latency_ms: number
 }
-
-export interface EmbeddingPoint {
-  id: string
-  label: string
-  x: number
-  y: number
-  score: number
-  type: 'query' | 'chunk'
-  source: string
-}
-
-export interface VizResponse {
-  points: EmbeddingPoint[]
-  note: string
-}

@@ -6,26 +6,21 @@ Endpoints:
     GET  /conversations          list conversation history
     GET  /conversations/{id}     get one conversation
     DELETE /conversations/{id}   delete one conversation
-    GET  /viz/embeddings         2-D PCA projection of recent query/chunk embeddings
 """
 
 import json
 import logging
 import os
-import asyncio
 import time
 import uuid
-from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, List, Optional
 
 import asyncpg
 import httpx
-import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sklearn.decomposition import PCA
 
 load_dotenv()
 
@@ -39,16 +34,13 @@ from llm_client import LLMClient
 from models import (
     Citation,
     Conversation,
-    EmbeddingPoint,
     Message,
     QueryRequest,
     QueryResponse,
-    VizResponse,
 )
-from query_decomposition import build_decomposition_plan
 
 RETRIEVAL_URL = os.getenv("RETRIEVAL_URL", "http://retrieval:8000")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://raguser:ragpassword@postgres:5432/ragdb")
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 app = FastAPI(title="Code RAG Generation Service")
 app.add_middleware(
@@ -60,11 +52,6 @@ app.add_middleware(
 
 _llm = LLMClient()
 _db: asyncpg.Pool | None = None
-
-# Ring buffer of recent embedding data for visualisation
-_embedding_store: Deque[Dict[str, Any]] = deque(maxlen=50)
-
-
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 async def _get_db() -> asyncpg.Pool:
@@ -167,43 +154,6 @@ def _flatten_chunks(retrieval_results: list) -> list[dict[str, Any]]:
     return [chunk for response in retrieval_results for chunk in response.get("chunks", [])]
 
 
-def _chunk_key(chunk: dict[str, Any]) -> str:
-    return str(chunk.get("chunk_id") or chunk.get("document_id") or chunk.get("document_title") or id(chunk))
-
-
-def _merge_branch_chunks(branch_chunks: dict[str, list[dict[str, Any]]], top_k: int) -> list[dict[str, Any]]:
-    branch_count = max(1, len(branch_chunks))
-    per_branch = max(1, top_k // branch_count)
-    selected: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for chunks in branch_chunks.values():
-        for chunk in sorted(chunks, key=lambda item: float(item.get("score", 0.0)), reverse=True)[:per_branch]:
-            key = _chunk_key(chunk)
-            if key in seen:
-                continue
-            seen.add(key)
-            selected.append(chunk)
-
-    if len(selected) >= top_k:
-        return selected[:top_k]
-
-    remaining = sorted(
-        [chunk for chunks in branch_chunks.values() for chunk in chunks],
-        key=lambda item: float(item.get("score", 0.0)),
-        reverse=True,
-    )
-    for chunk in remaining:
-        key = _chunk_key(chunk)
-        if key in seen:
-            continue
-        seen.add(key)
-        selected.append(chunk)
-        if len(selected) >= top_k:
-            break
-    return selected
-
-
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -217,29 +167,12 @@ async def query(req: QueryRequest) -> QueryResponse:
     source = req.source
     conv_id = req.conversation_id or str(uuid.uuid4())
 
-    decomposition_plan = build_decomposition_plan(req.query)
-
     # Retrieval — hybrid/vector/keyword/graph depending on req.mode
     t_ret_start = time.time()
     async with httpx.AsyncClient() as client:
         try:
-            if decomposition_plan.should_decompose:
-                branch_pairs = await asyncio.gather(
-                    *[
-                        _retrieve(client, sub.query, source, req.top_k, req.mode)
-                        for sub in decomposition_plan.sub_queries
-                    ]
-                )
-                branch_chunks = {
-                    sub.id: _flatten_chunks(results)
-                    for sub, results in zip(decomposition_plan.sub_queries, branch_pairs)
-                }
-                merged_chunks = _merge_branch_chunks(branch_chunks, req.top_k)
-                branch_result_counts = {branch_id: len(chunks) for branch_id, chunks in branch_chunks.items()}
-            else:
-                retrieval_results = await _retrieve(client, req.query, source, req.top_k, req.mode)
-                merged_chunks = _flatten_chunks(retrieval_results)
-                branch_result_counts = {}
+            retrieval_results = await _retrieve(client, req.query, source, req.top_k, req.mode)
+            merged_chunks = _flatten_chunks(retrieval_results)
         except httpx.HTTPStatusError as exc:
             log.error(f"Retrieval failed: {exc}", exc_info=True)
             raise HTTPException(status_code=502, detail=f"Retrieval error: {exc}")
@@ -296,22 +229,6 @@ async def query(req: QueryRequest) -> QueryResponse:
         )
     await _db_upsert_conversation(conv)
 
-    # Store embeddings metadata for visualisation (we re-fetch inline via a lightweight
-    # approach — just record query text + chunk scores for PCA later)
-    # NOTE: actual high-dim embeddings would need a separate embedding call or
-    # passthrough from the retrieval service. For the POC we generate random
-    # placeholder vectors seeded on chunk_id (replaced with real embeds when
-    # the retrieval API exposes them).
-    _embedding_store.append({
-        "conv_id": conv_id,
-        "query": req.query,
-        "timestamp": now,
-        "chunks": [
-            {"id": c.get("chunk_id", ""), "text": c.get("text", "")[:100], "score": c.get("score", 0.0)}
-            for c in merged_chunks
-        ],
-    })
-
     log.info(
         f"Query complete — conv={conv_id} chunks={len(merged_chunks)} "
         f"retrieval={retrieval_ms:.0f}ms gen={gen_ms:.0f}ms total={total_ms:.0f}ms"
@@ -325,10 +242,6 @@ async def query(req: QueryRequest) -> QueryResponse:
         latency_ms=total_ms,
         retrieval_latency_ms=retrieval_ms,
         generation_latency_ms=gen_ms,
-        decomposition_used=decomposition_plan.should_decompose,
-        decomposition_reason=decomposition_plan.reason,
-        decomposition_branches=[sub.id for sub in decomposition_plan.sub_queries],
-        branch_result_counts=branch_result_counts,
     )
 
 
@@ -351,70 +264,3 @@ async def delete_conversation(conv_id: str) -> dict:
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"deleted": conv_id}
-
-
-@app.get("/viz/embeddings", response_model=VizResponse)
-async def viz_embeddings() -> VizResponse:
-    """Return PCA-projected 2-D embedding points for recent queries + retrieved chunks.
-
-    Uses deterministic hashing to simulate per-text embeddings until the retrieval
-    service exposes raw vectors. Replace _text_to_pseudo_vec with a real embedding
-    call for production use.
-    """
-    if len(_embedding_store) < 2:
-        return VizResponse(points=[], note="Not enough data yet — run some queries first.")
-
-    raw_points: list[dict] = []
-
-    def _text_to_pseudo_vec(text: str) -> np.ndarray:
-        """Deterministic pseudo-embedding seeded on text hash (placeholder)."""
-        import hashlib
-        h = int(hashlib.sha256(text.encode()).hexdigest(), 16)
-        rng = np.random.default_rng(h % (2**32))
-        return rng.standard_normal(64)
-
-    for entry in _embedding_store:
-        raw_points.append({
-            "id": f"q_{entry['conv_id'][:8]}",
-            "label": entry["query"][:60],
-            "vec": _text_to_pseudo_vec(entry["query"]),
-            "score": 1.0,
-            "type": "query",
-            "source": "",
-        })
-        for chunk in entry.get("chunks", []):
-            raw_points.append({
-                "id": chunk["id"],
-                "label": chunk["text"][:60],
-                "vec": _text_to_pseudo_vec(chunk["text"]),
-                "score": chunk["score"],
-                "type": "chunk",
-                "source": "",
-            })
-
-    if len(raw_points) < 2:
-        return VizResponse(points=[], note="Not enough distinct points.")
-
-    matrix = np.stack([p["vec"] for p in raw_points])
-    n_components = min(2, matrix.shape[0], matrix.shape[1])
-    pca = PCA(n_components=n_components)
-    coords = pca.fit_transform(matrix)
-
-    points = [
-        EmbeddingPoint(
-            id=p["id"],
-            label=p["label"],
-            x=float(coords[i, 0]),
-            y=float(coords[i, 1]) if coords.shape[1] > 1 else 0.0,
-            score=p["score"],
-            type=p["type"],
-            source=p["source"],
-        )
-        for i, p in enumerate(raw_points)
-    ]
-
-    return VizResponse(
-        points=points,
-        note=f"PCA of {len(points)} points from {len(_embedding_store)} queries "
-             f"(pseudo-embeddings — wire real vectors from retrieval service for production).",
-    )

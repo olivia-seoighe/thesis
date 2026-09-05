@@ -1,4 +1,4 @@
-import type { Conversation, QueryResponse, VizResponse } from '../types'
+import type { Conversation, QueryResponse } from '../types'
 
 const GEN_BASE = '/api/generation'
 const RET_BASE = '/api/retrieval'
@@ -45,12 +45,6 @@ export async function getConversation(id: string): Promise<Conversation> {
 export async function deleteConversation(id: string): Promise<void> {
   const res = await fetch(`${GEN_BASE}/conversations/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Delete conversation failed: ${res.status}`)
-}
-
-export async function getVizEmbeddings(): Promise<VizResponse> {
-  const res = await fetch(`${GEN_BASE}/viz/embeddings`)
-  if (!res.ok) throw new Error(`Viz failed: ${res.status}`)
-  return res.json()
 }
 
 export async function checkHealth(): Promise<boolean> {
