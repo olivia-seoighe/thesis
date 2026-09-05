@@ -65,6 +65,7 @@ class RetrievalBaselineEvaluator:
             queries = queries[:limit]
 
         qrels_by_query = self._build_qrels_by_query(qrels)
+        qrel_groups_by_query = self._build_qrel_groups_by_query(qrels)
         run_id = self._build_run_id()
         has_service_aware_variant = any(strategy.endswith(SERVICE_AWARE_SUFFIX) for strategy in self.strategies)
         planner = (
@@ -103,6 +104,7 @@ class RetrievalBaselineEvaluator:
                     run_id=run_id,
                     query=query,
                     qrels_by_query=qrels_by_query,
+                    qrel_groups_by_query=qrel_groups_by_query,
                     planner=planner,
                 )
             )
@@ -117,6 +119,7 @@ class RetrievalBaselineEvaluator:
         run_id: str,
         query: dict[str, Any],
         qrels_by_query: dict[str, set[str]],
+        qrel_groups_by_query: dict[str, dict[str, str]],
         planner: ServiceAwarePlanner,
     ) -> list[dict[str, Any]]:
         query_id = str(query["query_id"])
@@ -124,6 +127,7 @@ class RetrievalBaselineEvaluator:
         category = str(query["category"])
         difficulty = self._as_int(query.get("difficulty"), default=0)
         relevant_doc_ids = qrels_by_query.get(query_id, set())
+        relevant_doc_to_group = qrel_groups_by_query.get(query_id, {})
         decision = planner.plan(query_text)
 
         rows: list[dict[str, Any]] = []
@@ -145,9 +149,13 @@ class RetrievalBaselineEvaluator:
             unique_doc_ids = self.metrics.unique_doc_ids_in_order([chunk.document_id for chunk in outcome.chunks])
             for k in self.k_values:
                 recall = self.metrics.recall_at_k(unique_doc_ids, relevant_doc_ids, k)
+                recall_ceiling = self.metrics.recall_ceiling_at_k(len(relevant_doc_ids), k)
+                ceiling_adjusted_recall = self.metrics.ceiling_adjusted_recall_at_k(unique_doc_ids, relevant_doc_ids, k)
+                evidence_group_recall = self.metrics.evidence_group_recall_at_k(unique_doc_ids, relevant_doc_to_group, k)
                 precision = self.metrics.precision_at_k(unique_doc_ids, relevant_doc_ids, k)
                 f1 = self.metrics.f1_score(recall, precision)
                 hit_count = self.metrics.hit_count_at_k(unique_doc_ids, relevant_doc_ids, k)
+                evidence_group_hit_count = self.metrics.evidence_group_hit_count_at_k(unique_doc_ids, relevant_doc_to_group, k)
                 mrr = self.metrics.mrr_at_k(unique_doc_ids, relevant_doc_ids, k)
                 ndcg = self.metrics.ndcg_at_k(unique_doc_ids, relevant_doc_ids, k)
                 graph_meta = self._extract_graph_traversal_meta(outcome.chunks)
@@ -172,9 +180,14 @@ class RetrievalBaselineEvaluator:
                         f1=f1,
                         mrr=mrr,
                         ndcg=ndcg,
+                        recall_ceiling=recall_ceiling,
+                        ceiling_adjusted_recall=ceiling_adjusted_recall,
+                        evidence_group_recall=evidence_group_recall,
                         relevant_count=len(relevant_doc_ids),
                         retrieved_count=min(k, len(unique_doc_ids)),
                         hit_count=hit_count,
+                        evidence_group_count=len({group for group in relevant_doc_to_group.values() if group}),
+                        evidence_group_hit_count=evidence_group_hit_count,
                         error=outcome.strategy_error,
                         graph_escalation_count=self._as_int(graph_meta.get("escalation_count"), default=0),
                         graph_hops_executed=self._as_int(graph_meta.get("hops_executed"), default=0),
@@ -213,6 +226,18 @@ class RetrievalBaselineEvaluator:
                 continue
             qrels_by_query.setdefault(query_id, set()).add(doc_id)
         return qrels_by_query
+
+    @staticmethod
+    def _build_qrel_groups_by_query(qrels: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+        qrel_groups_by_query: dict[str, dict[str, str]] = {}
+        for qrel in qrels:
+            query_id = str(qrel.get("query_id", "")).strip()
+            doc_id = str(qrel.get("doc_id", "")).strip()
+            service = str(qrel.get("service", "")).strip()
+            if not query_id or not doc_id or not service:
+                continue
+            qrel_groups_by_query.setdefault(query_id, {})[doc_id] = service
+        return qrel_groups_by_query
 
     @staticmethod
     def _as_int(value: Any, default: int) -> int:

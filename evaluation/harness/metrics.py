@@ -26,6 +26,35 @@ class MetricsCalculator:
         return len(top_k & relevant_doc_ids) / len(relevant_doc_ids)
 
     @staticmethod
+    def recall_ceiling_at_k(relevant_doc_count: int, k: int) -> float:
+        if relevant_doc_count <= 0 or k <= 0:
+            return 0.0
+        return min(k, relevant_doc_count) / relevant_doc_count
+
+    @staticmethod
+    def ceiling_adjusted_recall_at_k(retrieved_doc_ids: list[str], relevant_doc_ids: set[str], k: int) -> float:
+        ceiling = MetricsCalculator.recall_ceiling_at_k(len(relevant_doc_ids), k)
+        if ceiling <= 0.0:
+            return 0.0
+        return MetricsCalculator.recall_at_k(retrieved_doc_ids, relevant_doc_ids, k) / ceiling
+
+    @staticmethod
+    def evidence_group_recall_at_k(
+        retrieved_doc_ids: list[str],
+        relevant_doc_to_group: dict[str, str],
+        k: int,
+    ) -> float:
+        gold_groups = {group for group in relevant_doc_to_group.values() if group}
+        if not gold_groups or k <= 0:
+            return 0.0
+        retrieved_groups = {
+            relevant_doc_to_group[doc_id]
+            for doc_id in retrieved_doc_ids[:k]
+            if doc_id in relevant_doc_to_group and relevant_doc_to_group[doc_id]
+        }
+        return len(retrieved_groups & gold_groups) / len(gold_groups)
+
+    @staticmethod
     def precision_at_k(retrieved_doc_ids: list[str], relevant_doc_ids: set[str], k: int) -> float:
         if k <= 0:
             return 0.0
@@ -42,6 +71,20 @@ class MetricsCalculator:
     def hit_count_at_k(retrieved_doc_ids: list[str], relevant_doc_ids: set[str], k: int) -> int:
         top_k = set(retrieved_doc_ids[:k])
         return len(top_k & relevant_doc_ids)
+
+    @staticmethod
+    def evidence_group_hit_count_at_k(
+        retrieved_doc_ids: list[str],
+        relevant_doc_to_group: dict[str, str],
+        k: int,
+    ) -> int:
+        return len(
+            {
+                relevant_doc_to_group[doc_id]
+                for doc_id in retrieved_doc_ids[:k]
+                if doc_id in relevant_doc_to_group and relevant_doc_to_group[doc_id]
+            }
+        )
 
     @staticmethod
     def mrr_at_k(retrieved_doc_ids: list[str], relevant_doc_ids: set[str], k: int) -> float:

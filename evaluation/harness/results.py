@@ -60,7 +60,19 @@ class RunWriter:
 
     @staticmethod
     def _aggregate_rows(results_rows: list[dict[str, Any]], *, group_key: str) -> list[dict[str, Any]]:
-        metrics = ("recall", "precision", "f1", "mrr", "ndcg", "hit_count", "latency_ms")
+        metrics = (
+            "recall",
+            "precision",
+            "f1",
+            "mrr",
+            "ndcg",
+            "recall_ceiling",
+            "ceiling_adjusted_recall",
+            "evidence_group_recall",
+            "hit_count",
+            "evidence_group_hit_count",
+            "latency_ms",
+        )
         groups: dict[tuple[str, int, str], dict[str, Any]] = {}
 
         for row in results_rows:
@@ -79,7 +91,11 @@ class RunWriter:
                     "f1": 0.0,
                     "mrr": 0.0,
                     "ndcg": 0.0,
+                    "recall_ceiling": 0.0,
+                    "ceiling_adjusted_recall": 0.0,
+                    "evidence_group_recall": 0.0,
                     "hit_count": 0.0,
+                    "evidence_group_hit_count": 0.0,
                     "latency_ms": 0.0,
                 }
             bucket = groups[key]
@@ -108,7 +124,11 @@ class RunWriter:
                     "f1": aggregate["f1"] / count,
                     "mrr": aggregate["mrr"] / count,
                     "ndcg": aggregate["ndcg"] / count,
+                    "recall_ceiling": aggregate["recall_ceiling"] / count,
+                    "ceiling_adjusted_recall": aggregate["ceiling_adjusted_recall"] / count,
+                    "evidence_group_recall": aggregate["evidence_group_recall"] / count,
                     "hit_count": aggregate["hit_count"] / count,
+                    "evidence_group_hit_count": aggregate["evidence_group_hit_count"] / count,
                     "latency_ms": aggregate["latency_ms"] / count,
                 }
             )

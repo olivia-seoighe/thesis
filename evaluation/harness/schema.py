@@ -104,9 +104,14 @@ class EvaluationResultRow:
     f1: float
     mrr: float
     ndcg: float
+    recall_ceiling: float
+    ceiling_adjusted_recall: float
+    evidence_group_recall: float
     relevant_count: int
     retrieved_count: int
     hit_count: int
+    evidence_group_count: int
+    evidence_group_hit_count: int
     error: str
     graph_escalation_count: int = 0
     graph_hops_executed: int = 0
