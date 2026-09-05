@@ -225,3 +225,8 @@ class GraphTraversalMeta:
 class GraphReader(Protocol):
     async def fetch(self, query: str, *args: Any) -> list[Any]:
         ...
+
+
+class EmbeddingClientLike(Protocol):
+    async def embed_single(self, text: str) -> list[float]:
+        ...

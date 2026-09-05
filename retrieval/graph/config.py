@@ -16,6 +16,21 @@ GRAPH_NAME: Final[str] = os.getenv("GRAPH_NAME", "enterprise_graph")  # Must mat
 SEED_LOOKUP_LIMIT: Final[int] = int(os.getenv("GRAPH_SEED_LOOKUP_LIMIT", "15"))  # Caps seed fan-out so ambiguous mentions do not explode traversal.
 TOPOLOGY_QUERY_LIMIT: Final[int] = int(os.getenv("GRAPH_TOPOLOGY_QUERY_LIMIT", "500"))  # Keeps topology endpoint bounded for latency and payload size.
 
+MAX_SEED_MATCHES: Final[int] = int(os.getenv("GRAPH_MAX_SEED_MATCHES", "25"))  # Round-robin cap across mention groups before traversal planning.
+EMBEDDING_SEED_TOP_K_PER_LABEL: Final[int] = int(
+    os.getenv("GRAPH_EMBEDDING_SEED_TOP_K_PER_LABEL", "10")
+)  # Embedding candidates per label.
+EMBEDDING_SEED_MIN_SIMILARITY: Final[float] = float(
+    os.getenv("GRAPH_EMBEDDING_SEED_MIN_SIMILARITY", "0.11")
+)  # Cosine-similarity floor for embedding seed candidates.
+EMBEDDING_SEED_TIMEOUT_SECONDS: Final[float] = float(
+    os.getenv("GRAPH_EMBEDDING_SEED_TIMEOUT_SECONDS", "2.5")
+)  # Timeout for embedding seed lookup.
+
+STRUCTURED_QUERY_MIN_SIMILARITY: Final[float] = float(
+    os.getenv("GRAPH_STRUCTURED_QUERY_MIN_SIMILARITY", "0.51")
+)  # Cosine-similarity floor for structured-query routing.
+
 MAX_HOP_CAP: Final[int] = int(os.getenv("GRAPH_MAX_HOP_CAP", "4"))  # Prevents deep multi-hop drift into weakly related neighborhoods.
 MAX_NODE_CAP: Final[int] = int(os.getenv("GRAPH_MAX_NODE_CAP", "180"))  # Hard upper bound on per-hop breadth after escalation.
 MAX_EDGE_CAP: Final[int] = int(os.getenv("GRAPH_MAX_EDGE_CAP", "16"))  # Limits per-node edge expansion to avoid high-degree hubs dominating.

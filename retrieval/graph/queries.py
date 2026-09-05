@@ -89,6 +89,38 @@ def build_label_seed_lookup_query(*, label: str) -> CypherSpec:
     return CypherSpec(query=sql, args=(params,))
 
 
+def build_embedding_seed_lookup_query(
+    *,
+    query_embedding: list[float],
+    labels: list[str],
+    top_k_per_label: int,
+    min_similarity: float,
+) -> CypherSpec:
+    """Nearest-neighbor lookup against precomputed graph_node_name_embeddings.
+
+    Plain Postgres query (no ag_catalog.cypher) -- CypherSpec is reused here as a
+    generic SQL+params container, matching how build_evidence_query already uses it.
+    """
+    sql = """
+        WITH ranked AS (
+            SELECT
+                node_key, node_label, node_name, confidence, evidence_count,
+                1 - (embedding <=> $1::halfvec) AS similarity,
+                ROW_NUMBER() OVER (
+                    PARTITION BY node_label ORDER BY embedding <=> $1::halfvec
+                ) AS rn
+            FROM public.graph_node_name_embeddings
+            WHERE node_label = ANY($2::text[])
+        )
+        SELECT node_key, node_label, node_name, confidence, evidence_count, similarity
+        FROM ranked
+        WHERE rn <= $3 AND similarity >= $4
+        ORDER BY node_label, similarity DESC
+    """
+    embedding_literal = "[" + ",".join(str(v) for v in query_embedding) + "]"
+    return CypherSpec(query=sql, args=(embedding_literal, labels, top_k_per_label, min_similarity))
+
+
 def build_frontier_expansion_query(
     *,
     intent: QueryIntent,
@@ -245,6 +277,86 @@ def build_evidence_query(node_or_edge_ids: list[str], retrieval_corpus: str) -> 
     """
     params = _agtype_param({"node_keys": node_or_edge_ids})
     return CypherSpec(query=sql, args=(params, retrieval_corpus))
+
+
+def build_known_repos_query() -> CypherSpec:
+    """The full repo universe, used by the structured router's EXHAUSTIVE shape
+    to find which repos have no matching evidence (and so need an absence-fallback
+    citation, e.g. TARGETS_FRAMEWORK/csproj) rather than being silently omitted."""
+    return CypherSpec(query="SELECT DISTINCT source FROM document_metadata", args=())
+
+
+def build_structured_distinct_pairs_query(
+    *,
+    predicate: str,
+    object_keys: list[str] | None = None,
+    source_repos: list[str] | None = None,
+) -> CypherSpec:
+    """Cheap planning query for the structured router: which repos have any
+    graph_edge_evidence for this predicate (optionally restricted to a specific
+    anchor object and/or repo set)."""
+    sql = """
+        SELECT DISTINCT source_repo, object_key, object_name
+        FROM graph_edge_evidence
+        WHERE predicate = $1
+          AND ($2::text[] IS NULL OR object_key = ANY($2::text[]))
+          AND ($3::text[] IS NULL OR source_repo = ANY($3::text[]))
+    """
+    return CypherSpec(query=sql, args=(predicate, object_keys, source_repos))
+
+
+def build_structured_evidence_rows_query(
+    *,
+    predicate: str,
+    object_keys: list[str] | None = None,
+    source_repos: list[str] | None = None,
+    retrieval_corpus: str,
+) -> CypherSpec:
+    """Citable evidence rows for the structured router, one per (repo, file),
+    joined straight to document_embeddings/document_metadata -- mirrors
+    build_evidence_query's LATERAL-fallback-then-join pattern, but keyed off
+    graph_edge_evidence directly (edge-level facts) rather than graph_node_evidence
+    (node-declaration facts), since chunk_id is always NULL for these predicates
+    and document_id is always populated, so the fallback path is always taken."""
+    sql = """
+        WITH matched AS (
+            SELECT DISTINCT ON (source_repo, source_path)
+                source_repo, source_path, object_name, confidence, document_id, chunk_id
+            FROM graph_edge_evidence
+            WHERE predicate = $1
+              AND ($2::text[] IS NULL OR object_key = ANY($2::text[]))
+              AND ($3::text[] IS NULL OR source_repo = ANY($3::text[]))
+            ORDER BY source_repo, source_path, confidence DESC
+        )
+        SELECT
+            m.source_repo,
+            m.source_path,
+            m.object_name,
+            m.confidence,
+            COALESCE(m.chunk_id, fallback.chunk_id) AS resolved_chunk_id,
+            de.text,
+            de.source_code,
+            de.document_id,
+            COALESCE(dm.name, de.document_title, m.source_path) AS document_title,
+            COALESCE(dm.url, '') AS url,
+            COALESCE(dm.last_modified_date::text, '') AS last_modified_date,
+            COALESCE(de.source, '') AS source,
+            COALESCE((de.metadata)::jsonb, '{}'::jsonb) AS metadata
+        FROM matched m
+        LEFT JOIN LATERAL (
+            SELECT chunk_id
+            FROM document_embeddings de2
+            WHERE de2.document_id = m.document_id
+              AND de2.retrieval_corpus = $4
+            ORDER BY de2.chunk_id
+            LIMIT 1
+        ) fallback ON TRUE
+        JOIN document_embeddings de
+          ON de.chunk_id = COALESCE(m.chunk_id, fallback.chunk_id)
+          AND de.retrieval_corpus = $4
+        LEFT JOIN document_metadata dm ON dm.document_id = de.document_id AND dm.retrieval_corpus = de.retrieval_corpus
+    """
+    return CypherSpec(query=sql, args=(predicate, object_keys, source_repos, retrieval_corpus))
 
 
 def _agtype_param(payload: dict) -> str:

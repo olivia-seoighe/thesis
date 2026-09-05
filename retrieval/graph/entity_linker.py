@@ -231,10 +231,14 @@ def _extract_query_token_mentions(query: str) -> list[EntityMention]:
 
 
 def _repo_seed_sources(seed_matches: tuple[SeedMatch, ...]) -> set[str]:
+    """REPO matches trusted for SCOPING/FILTERING (an exclusionary filter, not
+    just ranking) -- only a mention whose own text matched a repo directly,
+    never a coincidental substring hit, bulk label fallback, or embedding hit.
+    """
     return {
         match.node.node_name
         for match in seed_matches
-        if match.node.node_label == REPO_LABEL and match.node.node_name
+        if match.match_reason == f"{REPO_LABEL}-direct" and match.node.node_name
     }
 
 

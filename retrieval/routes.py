@@ -189,6 +189,10 @@ async def search_hybrid(
         "fts",
         description="Keyword ranker used by hybrid endpoint: fts (default) or bm25.",
     ),
+    structured_first: bool = Query(
+        False,
+        description="If true, return a structured graph-router answer before falling back to hybrid fusion.",
+    ),
     corpus: str = Query("summaries", description=CORPUS_PARAM_DESCRIPTION),
 ):
     logger.info(
@@ -199,6 +203,7 @@ async def search_hybrid(
                 "top_k": top_k,
                 "source": source,
                 "keyword_ranker": keyword_ranker,
+                "structured_first": structured_first,
                 "corpus": corpus,
             }
         },
@@ -213,7 +218,7 @@ async def search_hybrid(
             keyword_ranker=keyword_ranker,
             retrieval_corpus=retrieval_corpus,
         )
-        results = await hybrid_search_endpoint.run(search_request)
+        results = await hybrid_search_endpoint.run(search_request, structured_first=structured_first)
         logger.info(
             "Hybrid search completed",
             extra={"search": {"results_count": _results_count(results)}},

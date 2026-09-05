@@ -16,8 +16,13 @@ class HybridSearchEndpoint:
         self.search_client = search_client or SearchClientFactory.create_search_client()
         self.graph_client = GraphClient(self.search_client)
 
-    async def run(self, request: SearchRequest) -> List[SearchResponse]:
+    async def run(self, request: SearchRequest, *, structured_first: bool = False) -> List[SearchResponse]:
         start = time.time()
+
+        if structured_first:
+            structured_response = await self.graph_client.structured_search(request, start_time=start)
+            if structured_response is not None:
+                return [structured_response]
 
         vec_result, kw_result, graph_result = await asyncio.gather(
             self.search_client.search(request),
