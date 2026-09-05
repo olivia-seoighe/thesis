@@ -1,4 +1,4 @@
-"""Deterministic graph triple extractor for the two-tier graph model.
+"""Graph triple extractor for the two-tier graph model.
 
 Design rules:
 - AST_LOCAL triples are emitted only from source-code parsing.

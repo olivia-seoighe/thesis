@@ -14,7 +14,13 @@ from openai import AsyncOpenAI
 
 load_dotenv()
 
-DSN = dict(host="localhost", port=15433, user="raguser", password="ragpassword", database="ragdb")
+DSN = {
+    "host": os.getenv("PGHOST", "localhost"),
+    "port": int(os.getenv("PGPORT", "15433")),
+    "user": os.environ["PGUSER"],
+    "password": os.environ["PGPASSWORD"],
+    "database": os.environ["PGDATABASE"],
+}
 GRAPH_NAME = "enterprise_graph"
 SEEDABLE_NODE_LABELS = [
     "KAFKA_TOPIC",

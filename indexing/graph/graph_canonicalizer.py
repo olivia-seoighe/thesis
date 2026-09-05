@@ -293,7 +293,7 @@ class GraphCanonicalizer:
         """Append 'api' only if the hyphen/underscore-stripped name doesn't already end with it.
 
         The regex-based match above can't see across a '-'/'_' boundary (e.g. "dps-operations-api"
-        has no unbroken run of [a-z0-9]+ ending in "api"), so without this check the naive fallback
+        has no unbroken run of [a-z0-9]+ ending in "api"), so without this check the suffix pass
         would double-suffix names like that into "dps-operations-apiapi".
         """
         compact = re.sub(r"[_-]+", "", value)

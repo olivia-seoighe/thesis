@@ -13,10 +13,10 @@ GRAPH_NAME: Final[str] = os.getenv("GRAPH_NAME", "enterprise_graph")  # Keeps ru
 
 AST_OWNERSHIP_CONFIDENCE: Final[float] = float(
     os.getenv("GRAPH_AST_OWNERSHIP_CONFIDENCE", "0.97")
-)  # High trust: ownership edges come from deterministic code symbols.
+)  # High trust: ownership edges come from parsed code symbols.
 AST_RELATION_CONFIDENCE: Final[float] = float(
     os.getenv("GRAPH_AST_RELATION_CONFIDENCE", "0.95")
-)  # Slightly lower: handler/saga relation inference is deterministic but pattern-based.
+)  # Slightly lower: handler/saga relation inference uses source patterns.
 AST_FEATURE_FLAG_CONFIDENCE: Final[float] = float(
     os.getenv("GRAPH_AST_FEATURE_FLAG_CONFIDENCE", "0.93")
 )  # Lower than ownership: flag detection relies on naming and usage patterns.
