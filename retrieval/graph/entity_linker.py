@@ -15,10 +15,10 @@ from .types import (
     REPO_LABEL,
     SEEDABLE_NODE_LABELS,
     EntityMention,
+    GraphScope,
     QueryIntent,
     SeedMatch,
     SeedRequest,
-    TopologyScope,
 )
 
 _QUERY_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -157,27 +157,27 @@ def infer_intent_from_seed_labels(
     return fallback_intent
 
 
-def resolve_topology_scope(
+def resolve_graph_scope(
     *,
     query: str,
     explicit_sources: list[str],
     mentions: tuple[EntityMention, ...],
     seed_matches: tuple[SeedMatch, ...],
-) -> TopologyScope:
+) -> GraphScope:
     if explicit_sources:
-        return _topology_scope_for_sources(explicit_sources)
+        return _graph_scope_for_sources(explicit_sources)
 
     if _requests_cross_service(query):
-        return TopologyScope.GLOBAL
+        return GraphScope.GLOBAL
 
     alias_repo_sources = _repo_sources_from_mentions(mentions)
     if alias_repo_sources:
-        return _topology_scope_for_sources(alias_repo_sources)
+        return _graph_scope_for_sources(alias_repo_sources)
 
     repo_seed_sources = _repo_seed_sources(seed_matches)
     if repo_seed_sources:
-        return _topology_scope_for_sources(repo_seed_sources)
-    return TopologyScope.GLOBAL
+        return _graph_scope_for_sources(repo_seed_sources)
+    return GraphScope.GLOBAL
 
 
 def resolve_effective_sources(
@@ -185,11 +185,11 @@ def resolve_effective_sources(
     explicit_sources: list[str],
     mentions: tuple[EntityMention, ...],
     seed_matches: tuple[SeedMatch, ...],
-    topology_scope: TopologyScope,
+    graph_scope: GraphScope,
 ) -> list[str]:
     if explicit_sources:
         return sorted({source for source in explicit_sources if source})
-    if topology_scope == TopologyScope.GLOBAL:
+    if graph_scope == GraphScope.GLOBAL:
         return []
     alias_repo_sources = _repo_sources_from_mentions(mentions)
     if alias_repo_sources:
@@ -200,11 +200,11 @@ def resolve_effective_sources(
     return []
 
 
-def _topology_scope_for_sources(sources: Iterable[str]) -> TopologyScope:
+def _graph_scope_for_sources(sources: Iterable[str]) -> GraphScope:
     unique_sources = {source.strip() for source in sources if source and source.strip()}
     if len(unique_sources) <= 1:
-        return TopologyScope.SERVICE_SCOPED
-    return TopologyScope.TARGETED_MULTI_SERVICE
+        return GraphScope.SERVICE_SCOPED
+    return GraphScope.TARGETED_MULTI_SERVICE
 
 
 def _extract_query_token_mentions(query: str) -> list[EntityMention]:
@@ -233,7 +233,7 @@ def _extract_query_token_mentions(query: str) -> list[EntityMention]:
 def _repo_seed_sources(seed_matches: tuple[SeedMatch, ...]) -> set[str]:
     """REPO matches trusted for SCOPING/FILTERING (an exclusionary filter, not
     just ranking) -- only a mention whose own text matched a repo directly,
-    never a coincidental substring hit, bulk label fallback, or embedding hit.
+    never a coincidental substring hit, label scan, or embedding hit.
     """
     return {
         match.node.node_name

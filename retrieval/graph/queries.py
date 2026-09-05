@@ -280,10 +280,56 @@ def build_evidence_query(node_or_edge_ids: list[str], retrieval_corpus: str) -> 
 
 
 def build_known_repos_query() -> CypherSpec:
-    """The full repo universe, used by the structured router's EXHAUSTIVE shape
-    to find which repos have no matching evidence (and so need an absence-fallback
-    citation, e.g. TARGETS_FRAMEWORK/csproj) rather than being silently omitted."""
     return CypherSpec(query="SELECT DISTINCT source FROM document_metadata", args=())
+
+
+def build_representative_document_rows_query(
+    *,
+    source_repos: list[str],
+    retrieval_corpus: str,
+) -> CypherSpec:
+    sql = """
+        WITH matched AS (
+            SELECT DISTINCT ON (dm.source)
+                dm.source AS source_repo,
+                COALESCE(dm.name, de.document_title, dm.document_id) AS source_path,
+                dm.document_id,
+                fallback.chunk_id
+            FROM document_metadata dm
+            JOIN LATERAL (
+                SELECT de2.chunk_id
+                FROM document_embeddings de2
+                WHERE de2.document_id = dm.document_id
+                  AND de2.retrieval_corpus = dm.retrieval_corpus
+                ORDER BY de2.chunk_id
+                LIMIT 1
+            ) fallback ON TRUE
+            JOIN document_embeddings de ON de.chunk_id = fallback.chunk_id
+            WHERE dm.retrieval_corpus = $1
+              AND dm.source = ANY($2::text[])
+            ORDER BY dm.source, dm.name NULLS LAST, dm.document_id
+        )
+        SELECT
+            m.source_repo,
+            m.source_path,
+            '' AS object_name,
+            0.0 AS confidence,
+            m.chunk_id AS resolved_chunk_id,
+            de.text,
+            de.source_code,
+            de.document_id,
+            COALESCE(dm.name, de.document_title, m.source_path) AS document_title,
+            COALESCE(dm.url, '') AS url,
+            COALESCE(dm.last_modified_date::text, '') AS last_modified_date,
+            COALESCE(de.source, '') AS source,
+            COALESCE((de.metadata)::jsonb, '{}'::jsonb) AS metadata
+        FROM matched m
+        JOIN document_embeddings de
+          ON de.chunk_id = m.chunk_id
+          AND de.retrieval_corpus = $1
+        LEFT JOIN document_metadata dm ON dm.document_id = de.document_id AND dm.retrieval_corpus = de.retrieval_corpus
+    """
+    return CypherSpec(query=sql, args=(retrieval_corpus, source_repos))
 
 
 def build_structured_distinct_pairs_query(

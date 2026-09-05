@@ -75,7 +75,7 @@ async def _lookup_for_mention(mention: EntityMention, graph_reader: GraphReader)
         return _wrap_matches(mention, direct, reason=f"{mention.preferred_label}-direct")
 
     bulk = await _lookup_by_label(mention.preferred_label, graph_reader)
-    return _wrap_matches(mention, bulk, reason=f"{mention.preferred_label}-bulk-fallback")
+    return _wrap_matches(mention, bulk, reason=f"{mention.preferred_label}-label-scan")
 
 
 def _wrap_matches(mention: EntityMention, nodes: list[GraphNodeRef], *, reason: str) -> list[SeedMatch]:

@@ -16,6 +16,7 @@ from .config import STRUCTURED_QUERY_MIN_SIMILARITY
 from .entity_linker import _repo_seed_sources, build_query_seed_mentions, build_seed_candidates
 from .queries import (
     build_known_repos_query,
+    build_representative_document_rows_query,
     build_structured_distinct_pairs_query,
     build_structured_evidence_rows_query,
 )
@@ -25,7 +26,7 @@ from .types import API_LABEL, FRAMEWORK_LABEL, NUGET_PACKAGE_LABEL, REPO_LABEL, 
 logger = get_logger(__name__)
 
 
-class RoutingShape(StrEnum):
+class StructuredQueryShape(StrEnum):
     SUBJECT = "SUBJECT"
     SUBJECT_ALL = "SUBJECT_ALL"
     EXHAUSTIVE = "EXHAUSTIVE"
@@ -34,45 +35,35 @@ class RoutingShape(StrEnum):
 
 @dataclass(frozen=True)
 class _Template:
-    template_id: str
     text: str
     predicate: str
-    routing_shape: RoutingShape
+    query_shape: StructuredQueryShape
     anchor_labels: tuple[str, ...]
 
 
 # Reference phrases for the embedding classifier.
-_TEMPLATES: tuple[_Template, ...] = (
-    _Template("subject_package_1", "Which services use the package?", "CONTAINS_PACKAGE", RoutingShape.SUBJECT, (NUGET_PACKAGE_LABEL,)),
-    _Template("subject_package_2", "Is this library used anywhere across the services?", "CONTAINS_PACKAGE", RoutingShape.SUBJECT, (NUGET_PACKAGE_LABEL,)),
-    _Template("subject_api_1", "Which services call this API?", "CALLS_API", RoutingShape.SUBJECT, (API_LABEL,)),
-    _Template("subject_api_2", "Which services send requests to this API, and what endpoint do they use?", "CALLS_API", RoutingShape.SUBJECT, (API_LABEL,)),
-    _Template("subject_exposes_api", "Which services expose this API?", "EXPOSES_API", RoutingShape.SUBJECT, (API_LABEL,)),
-    _Template("subject_framework", "Which services target this framework?", "TARGETS_FRAMEWORK", RoutingShape.SUBJECT, (FRAMEWORK_LABEL,)),
-    _Template("subject_all_saga", "Which services implement sagas, and how many does each have?", "OWNS_SAGA", RoutingShape.SUBJECT_ALL, ()),
-    _Template("subject_all_consumes", "Which services consume any Kafka topics at all?", "CONSUMES_TOPIC", RoutingShape.SUBJECT_ALL, ()),
-    _Template("subject_all_produces", "Which services publish any Kafka topics at all?", "PRODUCES_TOPIC", RoutingShape.SUBJECT_ALL, ()),
-    _Template("exhaustive_package_1", "Which services are missing this package?", "CONTAINS_PACKAGE", RoutingShape.EXHAUSTIVE, (NUGET_PACKAGE_LABEL,)),
-    _Template("exhaustive_package_2", "Which services handle this concern a different way, instead of using this package?", "CONTAINS_PACKAGE", RoutingShape.EXHAUSTIVE, (NUGET_PACKAGE_LABEL,)),
-    _Template("exhaustive_api", "Which services don't call this API?", "CALLS_API", RoutingShape.EXHAUSTIVE, (API_LABEL,)),
-    _Template("exhaustive_framework", "Which services haven't migrated to this framework yet?", "TARGETS_FRAMEWORK", RoutingShape.EXHAUSTIVE, (FRAMEWORK_LABEL,)),
-    _Template("topic_related_1", "Which service publishes this topic, and which other services consume it?", "PRODUCES_TOPIC", RoutingShape.TOPIC_RELATED, (REPO_LABEL, TOPIC_LABEL)),
-    _Template("topic_related_2", "Who produces and who consumes this topic?", "PRODUCES_TOPIC", RoutingShape.TOPIC_RELATED, (REPO_LABEL, TOPIC_LABEL)),
-    _Template("topic_related_3", "Which services are involved in producing or consuming this topic?", "PRODUCES_TOPIC", RoutingShape.TOPIC_RELATED, (REPO_LABEL, TOPIC_LABEL)),
-    _Template("topic_related_4", "What events does this service publish, and who listens for them?", "PRODUCES_TOPIC", RoutingShape.TOPIC_RELATED, (REPO_LABEL, TOPIC_LABEL)),
-    _Template("topic_related_5", "What does this service publish downstream, and which services consume it?", "PRODUCES_TOPIC", RoutingShape.TOPIC_RELATED, (REPO_LABEL, TOPIC_LABEL)),
+_TEMPLATES: tuple[_Template, ...] = tuple(
+    _Template(text, predicate, query_shape, anchor_labels)
+    for text, predicate, query_shape, anchor_labels in (
+        ("Which services use this package?", "CONTAINS_PACKAGE", StructuredQueryShape.SUBJECT, (NUGET_PACKAGE_LABEL,)),
+        ("Which services call this API?", "CALLS_API", StructuredQueryShape.SUBJECT, (API_LABEL,)),
+        ("Which services expose this API?", "EXPOSES_API", StructuredQueryShape.SUBJECT, (API_LABEL,)),
+        ("Which services target this framework?", "TARGETS_FRAMEWORK", StructuredQueryShape.SUBJECT, (FRAMEWORK_LABEL,)),
+        ("Which services implement sagas?", "OWNS_SAGA", StructuredQueryShape.SUBJECT_ALL, ()),
+        ("Which services consume Kafka topics?", "CONSUMES_TOPIC", StructuredQueryShape.SUBJECT_ALL, ()),
+        ("Which services publish Kafka topics?", "PRODUCES_TOPIC", StructuredQueryShape.SUBJECT_ALL, ()),
+        ("Which services are missing this package?", "CONTAINS_PACKAGE", StructuredQueryShape.EXHAUSTIVE, (NUGET_PACKAGE_LABEL,)),
+        ("Which services do not call this API?", "CALLS_API", StructuredQueryShape.EXHAUSTIVE, (API_LABEL,)),
+        ("Which services have not migrated to this framework?", "TARGETS_FRAMEWORK", StructuredQueryShape.EXHAUSTIVE, (FRAMEWORK_LABEL,)),
+        ("Which services produce or consume this topic?", "PRODUCES_TOPIC", StructuredQueryShape.TOPIC_RELATED, (TOPIC_LABEL,)),
+        ("What does this service publish downstream, and who consumes it?", "PRODUCES_TOPIC", StructuredQueryShape.TOPIC_RELATED, (REPO_LABEL,)),
+    )
 )
-
-_ABSENCE_FALLBACK_PREDICATE = "TARGETS_FRAMEWORK"
-_DIRECT_MATCH_SCORE = 1.0
-_ABSENCE_FALLBACK_SCORE = 0.4
-
 
 @dataclass(frozen=True)
 class _ClassifiedTemplate:
-    template_id: str
     predicate: str
-    routing_shape: RoutingShape
+    query_shape: StructuredQueryShape
     anchor_labels: tuple[str, ...]
     similarity: float
 
@@ -95,7 +86,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(y * y for y in b) ** 0.5
-    if norm_a == 0.0 or norm_b == 0.0:
+    if norm_a <= 0.0 or norm_b <= 0.0:
         return 0.0
     return dot / (norm_a * norm_b)
 
@@ -107,9 +98,8 @@ async def classify_structured_query(query_embedding: list[float], embedding_clie
         similarity = _cosine(query_embedding, embedding)
         if best is None or similarity > best.similarity:
             best = _ClassifiedTemplate(
-                template_id=template.template_id,
                 predicate=template.predicate,
-                routing_shape=template.routing_shape,
+                query_shape=template.query_shape,
                 anchor_labels=template.anchor_labels,
                 similarity=similarity,
             )
@@ -135,32 +125,21 @@ async def maybe_route_structured_query(
         if classified is None:
             return None
 
-        anchor_object_keys: list[str] | None = None
-        anchor_repo_names: list[str] | None = None
-        if classified.anchor_labels:
-            query_for_seeding, mentions = build_query_seed_mentions(request.query, service_aliases)
-            seed_request = build_seed_candidates(query_for_seeding, mentions, source_filters=request.sources)
-            seed_resolution = await resolve_seeds(seed_request, search_client, embedding_client=embedding_client)
-
-            if REPO_LABEL in classified.anchor_labels:
-                repo_names = _repo_seed_sources(seed_resolution.matches)
-                if repo_names:
-                    anchor_repo_names = sorted(repo_names)
-
-            other_matches = [
-                m for m in seed_resolution.matches
-                if m.node.node_label in classified.anchor_labels and m.node.node_label != REPO_LABEL
-            ]
-            if other_matches:
-                anchor_object_keys = sorted({m.node.node_key for m in other_matches})
-
-            if not anchor_repo_names and not anchor_object_keys:
-                return None
+        anchors = await _resolve_structured_anchors(
+            classified,
+            request=request,
+            search_client=search_client,
+            embedding_client=embedding_client,
+            service_aliases=service_aliases,
+        )
+        if anchors is None:
+            return None
+        anchor_object_keys, anchor_repo_names = anchors
 
         rows = await _execute_shape(
             search_client,
             predicate=classified.predicate,
-            routing_shape=classified.routing_shape,
+            query_shape=classified.query_shape,
             anchor_object_keys=anchor_object_keys,
             anchor_repo_names=anchor_repo_names,
             source_filter=list(request.sources) or None,
@@ -183,6 +162,47 @@ async def maybe_route_structured_query(
         return None
 
 
+# Resolves query mentions used to anchor a structured graph query.
+async def _resolve_structured_anchors(
+    classified: _ClassifiedTemplate,
+    *,
+    request: SearchRequest,
+    search_client: Any,
+    embedding_client: Any,
+    service_aliases: list[tuple[str, list[str]]],
+) -> tuple[list[str] | None, list[str] | None] | None:
+    if not classified.anchor_labels:
+        return None, None
+
+    query_for_seeding, mentions = build_query_seed_mentions(request.query, service_aliases)
+    seed_request = build_seed_candidates(query_for_seeding, mentions, source_filters=request.sources)
+    seed_resolution = await resolve_seeds(seed_request, search_client, embedding_client=embedding_client)
+
+    anchor_repo_names = _anchor_repo_names(classified, seed_resolution.matches)
+    anchor_object_keys = _anchor_object_keys(classified, seed_resolution.matches)
+    if not anchor_repo_names and not anchor_object_keys:
+        return None
+    return anchor_object_keys, anchor_repo_names
+
+
+# Extracts repo-name anchors for service/topic structured routes.
+def _anchor_repo_names(classified: _ClassifiedTemplate, matches) -> list[str] | None:
+    if REPO_LABEL not in classified.anchor_labels:
+        return None
+    repo_names = _repo_seed_sources(matches)
+    return sorted(repo_names) if repo_names else None
+
+
+# Extracts non-repo node anchors for structured routes.
+def _anchor_object_keys(classified: _ClassifiedTemplate, matches) -> list[str] | None:
+    object_keys = {
+        match.node.node_key
+        for match in matches
+        if match.node.node_label in classified.anchor_labels and match.node.node_label != REPO_LABEL
+    }
+    return sorted(object_keys) if object_keys else None
+
+
 def _intersect(repos: set[str], source_filter: list[str] | None) -> set[str]:
     if not source_filter:
         return repos
@@ -199,19 +219,19 @@ async def _execute_shape(
     search_client: Any,
     *,
     predicate: str,
-    routing_shape: RoutingShape,
+    query_shape: StructuredQueryShape,
     anchor_object_keys: list[str] | None,
     anchor_repo_names: list[str] | None,
     source_filter: list[str] | None,
     retrieval_corpus: str,
 ) -> list[dict[str, Any]]:
-    if routing_shape == RoutingShape.SUBJECT:
+    if query_shape == StructuredQueryShape.SUBJECT:
         return await _shape_subject(search_client, predicate=predicate, object_keys=anchor_object_keys, source_filter=source_filter, retrieval_corpus=retrieval_corpus)
-    if routing_shape == RoutingShape.SUBJECT_ALL:
+    if query_shape == StructuredQueryShape.SUBJECT_ALL:
         return await _shape_subject(search_client, predicate=predicate, object_keys=None, source_filter=source_filter, retrieval_corpus=retrieval_corpus)
-    if routing_shape == RoutingShape.EXHAUSTIVE:
+    if query_shape == StructuredQueryShape.EXHAUSTIVE:
         return await _shape_exhaustive(search_client, predicate=predicate, object_keys=anchor_object_keys, source_filter=source_filter, retrieval_corpus=retrieval_corpus)
-    if routing_shape == RoutingShape.TOPIC_RELATED:
+    if query_shape == StructuredQueryShape.TOPIC_RELATED:
         if anchor_repo_names:
             return await _shape_topic_producer_consumers(search_client, repo_names=anchor_repo_names, source_filter=source_filter, retrieval_corpus=retrieval_corpus)
         if anchor_object_keys:
@@ -250,9 +270,7 @@ async def _shape_exhaustive(search_client, *, predicate, object_keys, source_fil
     if missing_repos:
         fallback_rows = await _fetch(
             search_client,
-            build_structured_evidence_rows_query(
-                predicate=_ABSENCE_FALLBACK_PREDICATE, object_keys=None, source_repos=sorted(missing_repos), retrieval_corpus=retrieval_corpus
-            ),
+            build_representative_document_rows_query(source_repos=sorted(missing_repos), retrieval_corpus=retrieval_corpus),
         )
         for row in fallback_rows:
             row["_absence"] = True
@@ -346,9 +364,8 @@ def _rows_to_chunks(rows: list[dict[str, Any]], *, classified: _ClassifiedTempla
         is_absence = bool(row.get("_absence"))
         metadata = _coerce_metadata(row.get("metadata"))
         metadata["structured_route"] = {
-            "template_id": classified.template_id,
             "predicate": classified.predicate,
-            "routing_shape": classified.routing_shape.value,
+            "query_shape": classified.query_shape.value,
             "similarity": classified.similarity,
             "absence_fallback": is_absence,
         }
@@ -359,7 +376,7 @@ def _rows_to_chunks(rows: list[dict[str, Any]], *, classified: _ClassifiedTempla
                 document_id=str(row["document_id"]),
                 document_title=str(row["document_title"]),
                 last_modified_date=str(row["last_modified_date"] or ""),
-                score=_ABSENCE_FALLBACK_SCORE if is_absence else _DIRECT_MATCH_SCORE,
+                score=float(row.get("confidence") or 0.0),
                 metadata=metadata,
                 source=str(row["source"] or ""),
                 url=str(row["url"] or ""),
