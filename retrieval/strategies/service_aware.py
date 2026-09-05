@@ -321,51 +321,42 @@ def build_service_planner(
     return ServiceAwarePlanner(entries)
 
 
+# Loads service aliases from JSON into catalogue entries.
 def load_service_catalogue(path: Path) -> tuple[ServiceCatalogueEntry, ...]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
         raise ValueError("Service catalogue file must be a JSON list.")
-    entries: list[ServiceCatalogueEntry] = []
+    return tuple(
+        entry
+        for row in payload
+        if isinstance(row, dict)
+        for entry in _service_catalogue_entries(row)
+    )
 
-    def _as_text_list(value: Any) -> list[str]:
-        if isinstance(value, str):
-            token = value.strip()
-            return [token] if token else []
-        if isinstance(value, list):
-            tokens: list[str] = []
-            for item in value:
-                if isinstance(item, str):
-                    token = item.strip()
-                    if token:
-                        tokens.append(token)
-            return tokens
-        return []
 
-    for row in payload:
-        if not isinstance(row, dict):
-            continue
-        sources = _as_text_list(row.get("source"))
-        short_forms = _as_text_list(row.get("short_form"))
-        long_forms = _as_text_list(row.get("long_form"))
-        unique_sources = tuple(sorted(set(sources)))
-        unique_short_forms = tuple(sorted(set(short_forms)))
-        unique_long_forms = tuple(sorted(set(long_forms)))
-        if not unique_short_forms and not unique_long_forms:
-            continue
-        if not unique_sources:
-            entries.append(
-                ServiceCatalogueEntry(
-                    source="",
-                    short_forms=unique_short_forms,
-                    long_forms=unique_long_forms,
-                )
-            )
-        for source in unique_sources:
-            entries.append(
-                ServiceCatalogueEntry(
-                    source=source,
-                    short_forms=unique_short_forms,
-                    long_forms=unique_long_forms,
-                )
-            )
-    return tuple(entries)
+# Converts a catalogue JSON row into one or more service entries.
+def _service_catalogue_entries(row: dict[str, Any]) -> tuple[ServiceCatalogueEntry, ...]:
+    sources = tuple(sorted(set(_as_text_list(row.get("source")))))
+    short_forms = tuple(sorted(set(_as_text_list(row.get("short_form")))))
+    long_forms = tuple(sorted(set(_as_text_list(row.get("long_form")))))
+    if not short_forms and not long_forms:
+        return ()
+    entry_sources = sources or ("",)
+    return tuple(
+        ServiceCatalogueEntry(
+            source=source,
+            short_forms=short_forms,
+            long_forms=long_forms,
+        )
+        for source in entry_sources
+    )
+
+
+# Normalizes string-or-list JSON values into clean text tokens.
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        token = value.strip()
+        return [token] if token else []
+    if isinstance(value, list):
+        return [token for item in value if isinstance(item, str) if (token := item.strip())]
+    return []

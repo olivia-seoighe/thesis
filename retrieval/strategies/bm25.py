@@ -10,7 +10,9 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-# Deterministic tokenization that preserves software identifiers like order-service.
+from retrieval.utils.corpus import normalize_retrieval_corpus
+
+# Tokenization preserves software identifiers like order-service.
 _BM25_TOKEN = re.compile(r"\w+(?:-\w+)*")
 
 
@@ -45,7 +47,7 @@ class BM25BuildStats:
 
 
 def tokenize_bm25(text: str) -> list[str]:
-    """Tokenize text deterministically for BM25 scoring."""
+    """Tokenize text for BM25 scoring."""
     return [token.lower() for token in _BM25_TOKEN.findall(text)]
 
 
@@ -156,14 +158,9 @@ class BM25Index:
 
         unique_terms = tuple(dict.fromkeys(query_terms))
         allowed_sources = {source.strip() for source in (sources or []) if source.strip()}
-        corpus_token = retrieval_corpus.strip().lower() if retrieval_corpus else "summaries"
-        if corpus_token in {"summary", "summaries"}:
-            corpus_token = "summaries"
-        elif corpus_token in {"source_code", "code"}:
-            corpus_token = "code"
-        elif corpus_token == "all":
-            corpus_token = "all"
-        else:
+        try:
+            corpus_token = normalize_retrieval_corpus(retrieval_corpus)
+        except ValueError:
             corpus_token = "summaries"
 
         def _in_scope(document: BM25Document) -> bool:

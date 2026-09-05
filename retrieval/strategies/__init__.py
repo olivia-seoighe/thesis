@@ -1,5 +1,5 @@
 from .rrf import rrf_merge
-from .metadata_aware import (
+from .service_aware import (
     MetadataMode,
     SERVICE_AWARE_SUFFIX,
     ServiceAwareDecision,

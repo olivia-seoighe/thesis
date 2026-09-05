@@ -12,7 +12,7 @@ from typing import Any
 from evaluation.harness.metrics import MetricsCalculator
 from evaluation.harness.schema import EvaluationResultRow, RunMeta
 from evaluation.harness.strategies import StrategyRunner
-from retrieval.strategies.metadata_aware import (
+from retrieval.strategies.service_aware import (
     SERVICE_AWARE_SUFFIX,
     ServiceAwarePlanner,
     build_service_planner,
@@ -189,7 +189,6 @@ class RetrievalBaselineEvaluator:
                         evidence_group_count=len({group for group in relevant_doc_to_group.values() if group}),
                         evidence_group_hit_count=evidence_group_hit_count,
                         error=outcome.strategy_error,
-                        graph_escalation_count=self._as_int(graph_meta.get("escalation_count"), default=0),
                         graph_hops_executed=self._as_int(graph_meta.get("hops_executed"), default=0),
                         graph_nodes_visited=self._as_int(graph_meta.get("nodes_visited"), default=0),
                         graph_paths_examined=self._as_int(graph_meta.get("paths_examined"), default=0),
