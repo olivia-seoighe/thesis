@@ -113,7 +113,6 @@ class EvaluationResultRow:
     evidence_group_count: int
     evidence_group_hit_count: int
     error: str
-    graph_escalation_count: int = 0
     graph_hops_executed: int = 0
     graph_nodes_visited: int = 0
     graph_paths_examined: int = 0

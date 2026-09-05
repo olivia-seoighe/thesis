@@ -9,6 +9,7 @@ from retrieval.endpoints.hybrid_search import HybridSearchEndpoint
 from retrieval.endpoints.keyword_search import KeywordSearchEndpoint
 from retrieval.endpoints.vector_search import VectorSearchEndpoint
 from retrieval.models.models import SearchRequest, SearchResponse
+from retrieval.utils.corpus import normalize_retrieval_corpus
 from retrieval.utils.logging_config import get_logger, get_request_id
 
 load_dotenv()
@@ -42,16 +43,10 @@ def _parse_sources_param(source: str | None) -> list[str]:
 
 
 def _normalize_corpus_param(corpus: str | None) -> str:
-    if not isinstance(corpus, str):
-        corpus = None
-    token = (corpus or "summaries").strip().lower()
-    if token in {"summary", "summaries"}:
-        return "summaries"
-    if token in {"code", "source_code"}:
-        return "code"
-    if token == "all":
-        return "all"
-    raise HTTPException(status_code=400, detail=f"Invalid corpus value: {corpus!r}")
+    try:
+        return normalize_retrieval_corpus(corpus if isinstance(corpus, str) else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _results_count(results: list[SearchResponse]) -> int:
@@ -242,10 +237,6 @@ async def search_graph(
         None,
         description=SOURCE_PARAM_DESCRIPTION,
     ),
-    hop_policy: str = Query(
-        "adaptive",
-        description="Graph hop policy mode: adaptive (default) or fixed.",
-    ),
     corpus: str = Query("summaries", description=CORPUS_PARAM_DESCRIPTION),
 ):
     logger.info(
@@ -255,7 +246,6 @@ async def search_graph(
                 "query": query,
                 "top_k": top_k,
                 "source": source,
-                "hop_policy": hop_policy,
                 "corpus": corpus,
             }
         },
@@ -269,10 +259,7 @@ async def search_graph(
             sources=sources,
             retrieval_corpus=retrieval_corpus,
         )
-        results = await graph_search_endpoint.run(
-            search_request,
-            hop_policy_mode=hop_policy,
-        )
+        results = await graph_search_endpoint.run(search_request)
         logger.info(
             "Graph search completed",
             extra={"search": {"results_count": _results_count(results)}},

@@ -37,7 +37,7 @@ class QueryIntent(StrEnum):
     GENERAL = "GENERAL"
 
 
-class TopologyScope(StrEnum):
+class GraphScope(StrEnum):
     GLOBAL = "global"
     SERVICE_SCOPED = "service-scoped"
     TARGETED_MULTI_SERVICE = "targeted-multi-service"
@@ -98,7 +98,6 @@ class TraversalBudget:
     max_edges_per_node: int
     global_path_budget: int
     global_node_budget: int
-    max_latency_ms: int
 
 
 @dataclass(frozen=True)
@@ -107,39 +106,6 @@ class TraversalPlan:
     seed_node_keys: tuple[str, ...]
     budget: TraversalBudget
     target_results: int = 5
-
-
-@dataclass(frozen=True)
-class TraversalState:
-    intent: QueryIntent
-    current_hop: int
-    budget: TraversalBudget
-    escalations: int
-    visited_nodes: int
-    visited_paths: int
-    target_results: int = 5
-    elapsed_ms: float = 0.0
-    avg_confidence: float = 0.0
-    distinct_source_kinds: int = 0
-    ast_path_count: int = 0
-    newly_added_paths: int = 0
-    top_hop_frontier_size: int = 0
-    stop_reason: str = "continue"
-
-
-@dataclass(frozen=True)
-class TraversalEscalationStep:
-    from_budget: dict[str, int]
-    to_budget: dict[str, int]
-    reason: str
-    at_hop: int
-    elapsed_ms: float
-
-
-@dataclass(frozen=True)
-class StopDecision:
-    should_stop: bool
-    reason: str
 
 
 @dataclass(frozen=True)
@@ -208,12 +174,8 @@ class CypherSpec:
 @dataclass(frozen=True)
 class GraphTraversalMeta:
     intent: str
-    hop_policy_mode: str
     initial_budget: dict[str, int]
     final_budget: dict[str, int]
-    escalation_count: int
-    escalation_steps: list[dict[str, Any]]
-    escalation_reason: str
     hops_executed: int
     frontier_sizes_by_hop: dict[str, int]
     nodes_visited: int

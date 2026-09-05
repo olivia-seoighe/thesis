@@ -7,26 +7,22 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import (
-    ESCALATION_REASON_CONFIDENCE_THRESHOLD,
-    RANK_DECAY_ADAPTIVE_DEFAULT,
-    RANK_DECAY_ADAPTIVE_ESCALATED,
-    RANK_DECAY_FIXED,
-)
+from .config import RANK_DECAY
 from .entity_linker import (
     build_query_seed_mentions,
     build_seed_candidates,
     infer_intent_from_seed_labels,
     resolve_effective_sources,
-    resolve_topology_scope,
+    resolve_graph_scope,
 )
-from .hop_policy import next_hop_budget, plan_traversal, prune_frontier_rows, should_escalate_depth, should_stop
+from .hop_policy import plan_traversal, prune_frontier_rows
 from .queries import build_evidence_query, build_frontier_expansion_query
 from .ranker import aggregate_to_chunks, extract_query_terms
 from .seed_resolver import resolve_seeds
 from .structured_router import maybe_route_structured_query
 from .types import (
     EvidenceBundle,
+    GraphScope,
     GraphNodeRef,
     GraphPath,
     NodeCandidate,
@@ -35,14 +31,11 @@ from .types import (
     RankingContext,
     SeedMatch,
     SeedResolution,
-    TopologyScope,
-    TraversalEscalationStep,
     GraphTraversalMeta,
     TraversalPlan,
-    TraversalState,
 )
 from retrieval.models.models import RetrievedChunk, SearchRequest, SearchResponse
-from retrieval.strategies.metadata_aware import load_service_catalogue
+from retrieval.strategies.service_aware import load_service_catalogue
 from retrieval.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -63,7 +56,7 @@ class GraphClient:
             start_time=start_time if start_time is not None else time.time(),
         )
 
-    async def search(self, request: SearchRequest, *, hop_policy_mode: str = "adaptive") -> SearchResponse:
+    async def search(self, request: SearchRequest) -> SearchResponse:
         start_time = time.time()
 
         structured_response = await self.structured_search(request, start_time=start_time)
@@ -71,8 +64,6 @@ class GraphClient:
             return structured_response
 
         seed_start = time.time()
-        policy_mode = self._normalize_hop_policy_mode(hop_policy_mode)
-
         query_for_seeding, mentions = build_query_seed_mentions(request.query, self._service_aliases)
         seed_request = build_seed_candidates(
             query_for_seeding,
@@ -84,7 +75,7 @@ class GraphClient:
             seed_request, self.cm, embedding_client=getattr(self.cm, "embedding_client", None)
         )
         seed_ms = (time.time() - seed_start) * 1000
-        topology_scope = resolve_topology_scope(
+        graph_scope = resolve_graph_scope(
             query=request.query,
             explicit_sources=request.sources,
             mentions=seed_request.mentions,
@@ -94,7 +85,7 @@ class GraphClient:
             explicit_sources=request.sources,
             mentions=seed_request.mentions,
             seed_matches=seed_resolution.matches,
-            topology_scope=topology_scope,
+            graph_scope=graph_scope,
         )
         if not seed_resolution.matches:
             logger.info(
@@ -126,10 +117,7 @@ class GraphClient:
             query=request.query,
             target_results=request.top_k,
         )
-        traversal_result = await self._traverse_with_policy(
-            traversal,
-            hop_policy_mode=policy_mode,
-        )
+        traversal_result = await self._traverse_with_policy(traversal)
         neighborhood_rows = traversal_result["rows"]
         traversal_meta: GraphTraversalMeta = traversal_result["meta"]
 
@@ -157,7 +145,7 @@ class GraphClient:
 
         path_mapping = self._build_path_mapping(neighborhood_rows, seed_resolution.matches)
         candidate_pool_size = request.top_k
-        if effective_intent == QueryIntent.TOPOLOGY and topology_scope == TopologyScope.GLOBAL:
+        if effective_intent == QueryIntent.TOPOLOGY and graph_scope == GraphScope.GLOBAL:
             candidate_pool_size = min(200, max(request.top_k * 6, request.top_k))
 
         ranked = aggregate_to_chunks(
@@ -166,14 +154,11 @@ class GraphClient:
             candidate_pool_size,
             RankingContext(
                 intent=effective_intent,
-                decay_lambda=self._decay_lambda_for_mode(
-                    hop_policy_mode=policy_mode,
-                    escalation_count=traversal_meta.escalation_count,
-                ),
+                decay_lambda=RANK_DECAY,
                 query_terms=extract_query_terms(request.query),
             ),
         )
-        if effective_intent == QueryIntent.TOPOLOGY and topology_scope == TopologyScope.GLOBAL:
+        if effective_intent == QueryIntent.TOPOLOGY and graph_scope == GraphScope.GLOBAL:
             ranked = self._apply_service_diversity(ranked, request.top_k, strict=True)
         ranked = self._apply_document_diversity(ranked, request.max_chunks_per_document)
         ranking_ms = (time.time() - ranking_start) * 1000
@@ -210,134 +195,25 @@ class GraphClient:
             source_searched=",".join(effective_sources) if effective_sources else "all",
         )
 
-    @staticmethod
-    def _decay_lambda_for_mode(*, hop_policy_mode: str, escalation_count: int) -> float:
-        if hop_policy_mode != "adaptive":
-            return RANK_DECAY_FIXED
-        if escalation_count > 0:
-            return RANK_DECAY_ADAPTIVE_ESCALATED
-        return RANK_DECAY_ADAPTIVE_DEFAULT
-
     async def _traverse_with_policy(
         self,
         traversal: TraversalPlan,
-        *,
-        hop_policy_mode: str,
     ) -> dict[str, Any]:
         traversal_start = time.time()
-        adaptive_mode = hop_policy_mode == "adaptive"
-        previous_row_count = 0
-        escalation_steps: list[TraversalEscalationStep] = []
-        escalation_reason = ""
-        stop_reason = "continue"
-        state = TraversalState(
+        rows = await self._expand_with_budget(traversal)
+        rows = prune_frontier_rows(
+            rows,
             intent=traversal.intent,
-            current_hop=0,
+            seed_node_keys=traversal.seed_node_keys,
             budget=traversal.budget,
-            escalations=0,
-            visited_nodes=len(traversal.seed_node_keys),
-            visited_paths=0,
-            target_results=traversal.target_results,
         )
-        current_plan = traversal
-
-        while True:
-            rows = await self._expand_with_budget(current_plan)
-            rows = prune_frontier_rows(
-                rows,
-                intent=current_plan.intent,
-                seed_node_keys=current_plan.seed_node_keys,
-                budget=current_plan.budget,
-            )
-
-            hop_values = [int(row["hop"]) for row in rows]
-            confidence_values = [float(row["confidence"]) for row in rows]
-            source_kinds = {str(row["source_kind"]) for row in rows if row.get("source_kind")}
-            ast_path_count = sum(1 for row in rows if str(row.get("tier", "")).upper() == "AST_LOCAL")
-            frontier_hop = max(hop_values, default=0)
-            top_hop_frontier_size = sum(1 for hop in hop_values if hop == frontier_hop)
-            elapsed_ms = (time.time() - traversal_start) * 1000
-
-            state = TraversalState(
-                intent=current_plan.intent,
-                current_hop=frontier_hop,
-                budget=current_plan.budget,
-                escalations=state.escalations,
-                visited_nodes=len({key for row in rows for key in (row["subject_key"], row["object_key"])}),
-                visited_paths=len(rows),
-                target_results=current_plan.target_results,
-                elapsed_ms=elapsed_ms,
-                avg_confidence=(sum(confidence_values) / len(confidence_values)) if confidence_values else 0.0,
-                distinct_source_kinds=len(source_kinds),
-                ast_path_count=ast_path_count,
-                newly_added_paths=max(0, len(rows) - previous_row_count),
-                top_hop_frontier_size=top_hop_frontier_size,
-            )
-            if adaptive_mode and should_escalate_depth(state, rows):
-                next_budget = next_hop_budget(state, rows)
-                escalation_reason = self._derive_escalation_reason(state, rows)
-                current_plan = TraversalPlan(
-                    intent=current_plan.intent,
-                    seed_node_keys=current_plan.seed_node_keys,
-                    budget=next_budget,
-                    target_results=current_plan.target_results,
-                )
-                escalation_steps.append(
-                    TraversalEscalationStep(
-                        from_budget=self._budget_dict(state.budget),
-                        to_budget=self._budget_dict(next_budget),
-                        reason=escalation_reason,
-                        at_hop=state.current_hop,
-                        elapsed_ms=state.elapsed_ms,
-                    )
-                )
-                state = TraversalState(
-                    intent=state.intent,
-                    current_hop=state.current_hop,
-                    budget=next_budget,
-                    escalations=state.escalations + 1,
-                    visited_nodes=state.visited_nodes,
-                    visited_paths=state.visited_paths,
-                    target_results=state.target_results,
-                    elapsed_ms=state.elapsed_ms,
-                    avg_confidence=state.avg_confidence,
-                    distinct_source_kinds=state.distinct_source_kinds,
-                    ast_path_count=state.ast_path_count,
-                    newly_added_paths=state.newly_added_paths,
-                    top_hop_frontier_size=state.top_hop_frontier_size,
-                )
-                previous_row_count = len(rows)
-                continue
-
-            stop_decision = should_stop(state, rows)
-            if stop_decision.should_stop:
-                stop_reason = stop_decision.reason
-                meta = self._build_traversal_meta(
-                    traversal=traversal,
-                    final_plan=current_plan,
-                    rows=rows,
-                    state=state,
-                    escalation_steps=escalation_steps,
-                    escalation_reason=escalation_reason,
-                    stop_reason=stop_reason,
-                    traversal_start=traversal_start,
-                    hop_policy_mode=hop_policy_mode,
-                )
-                return {"rows": rows, "meta": meta}
-
-            stop_reason = "no_escalation_triggers"
-            meta = self._build_traversal_meta(
-                traversal=traversal,
-                final_plan=current_plan,
-                rows=rows,
-                state=state,
-                escalation_steps=escalation_steps,
-                escalation_reason=escalation_reason,
-                stop_reason=stop_reason,
-                traversal_start=traversal_start,
-                hop_policy_mode=hop_policy_mode,
-            )
-            return {"rows": rows, "meta": meta}
+        meta = self._build_traversal_meta(
+            traversal=traversal,
+            rows=rows,
+            stop_reason=self._traversal_stop_reason(traversal, rows),
+            traversal_start=traversal_start,
+        )
+        return {"rows": rows, "meta": meta}
 
     async def _expand_with_budget(self, traversal: TraversalPlan) -> list[dict[str, Any]]:
         frontier = set(traversal.seed_node_keys)
@@ -639,26 +515,22 @@ class GraphClient:
             "max_edges_per_node": int(budget.max_edges_per_node),
             "global_path_budget": int(budget.global_path_budget),
             "global_node_budget": int(budget.global_node_budget),
-            "max_latency_ms": int(budget.max_latency_ms),
         }
 
     def _build_traversal_meta(
         self,
         *,
         traversal: TraversalPlan,
-        final_plan: TraversalPlan,
         rows: list[dict[str, Any]],
-        state: TraversalState,
-        escalation_steps: list[TraversalEscalationStep],
-        escalation_reason: str,
         stop_reason: str,
         traversal_start: float,
-        hop_policy_mode: str,
     ) -> GraphTraversalMeta:
         frontier_sizes: dict[str, int] = {}
         for row in rows:
             hop = str(int(row.get("hop", 0) or 0))
             frontier_sizes[hop] = frontier_sizes.get(hop, 0) + 1
+        node_keys = {key for row in rows for key in (row["subject_key"], row["object_key"])}
+        node_keys.update(traversal.seed_node_keys)
         timing = {
             "seed_ms": 0.0,
             "traversal_ms": (time.time() - traversal_start) * 1000,
@@ -668,16 +540,12 @@ class GraphClient:
         }
         return GraphTraversalMeta(
             intent=str(traversal.intent),
-            hop_policy_mode=hop_policy_mode,
             initial_budget=self._budget_dict(traversal.budget),
-            final_budget=self._budget_dict(final_plan.budget),
-            escalation_count=len(escalation_steps),
-            escalation_steps=[step.__dict__ for step in escalation_steps],
-            escalation_reason=escalation_reason,
-            hops_executed=state.current_hop,
+            final_budget=self._budget_dict(traversal.budget),
+            hops_executed=max((int(row.get("hop", 0) or 0) for row in rows), default=0),
             frontier_sizes_by_hop=frontier_sizes,
-            nodes_visited=state.visited_nodes,
-            paths_examined=state.visited_paths,
+            nodes_visited=len(node_keys),
+            paths_examined=len(rows),
             stop_reason=stop_reason,
             timing_ms=timing,
         )
@@ -698,12 +566,8 @@ class GraphClient:
         timing["total_ms"] = total_ms
         return GraphTraversalMeta(
             intent=traversal_meta.intent,
-            hop_policy_mode=traversal_meta.hop_policy_mode,
             initial_budget=traversal_meta.initial_budget,
             final_budget=traversal_meta.final_budget,
-            escalation_count=traversal_meta.escalation_count,
-            escalation_steps=traversal_meta.escalation_steps,
-            escalation_reason=traversal_meta.escalation_reason,
             hops_executed=traversal_meta.hops_executed,
             frontier_sizes_by_hop=traversal_meta.frontier_sizes_by_hop,
             nodes_visited=traversal_meta.nodes_visited,
@@ -713,25 +577,12 @@ class GraphClient:
         )
 
     @staticmethod
-    def _normalize_hop_policy_mode(value: str | None) -> str:
-        token = (value or "").strip().lower()
-        return "fixed" if token == "fixed" else "adaptive"
-
-    @staticmethod
-    def _derive_escalation_reason(state: TraversalState, rows: list[dict[str, Any]]) -> str:
-        reasons: list[str] = []
-        if len(rows) < state.target_results:
-            reasons.append("low_result_count")
-        if state.avg_confidence < ESCALATION_REASON_CONFIDENCE_THRESHOLD:
-            reasons.append("low_path_score_floor")
-        if state.distinct_source_kinds <= 1:
-            reasons.append("low_evidence_diversity")
-        if state.top_hop_frontier_size < max(3, state.target_results // 2):
-            reasons.append("low_frontier_width")
-        if state.newly_added_paths <= max(1, state.target_results // 5):
-            reasons.append("low_marginal_gain")
-        if state.intent == QueryIntent.LOCAL_LOGIC and state.ast_path_count == 0:
-            reasons.append("missing_ast_paths")
-        if not reasons:
-            reasons.append("generic_escalation")
-        return ",".join(reasons)
+    def _traversal_stop_reason(traversal: TraversalPlan, rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return "no_paths_found"
+        if len(rows) >= traversal.budget.global_path_budget:
+            return "path_budget_reached"
+        hops_executed = max((int(row.get("hop", 0) or 0) for row in rows), default=0)
+        if hops_executed >= traversal.budget.max_hops:
+            return "hop_limit_reached"
+        return "budget_complete"

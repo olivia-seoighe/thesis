@@ -21,6 +21,7 @@ from evaluation.harness.config import (
 )
 from evaluation.harness.evaluator import RetrievalBaselineEvaluator
 from evaluation.harness.results import RunWriter
+from retrieval.utils.corpus import normalize_retrieval_corpus
 
 
 def parse_k_values(raw_value: str) -> tuple[int, ...]:
@@ -49,14 +50,10 @@ def parse_strategies(raw_value: str) -> tuple[str, ...]:
 
 
 def parse_retrieval_corpus(raw_value: str) -> str:
-    token = raw_value.strip().lower()
-    if token in {"summary", "summaries"}:
-        return "summaries"
-    if token in {"code", "source_code"}:
-        return "code"
-    if token == "all":
-        return "all"
-    raise ValueError("--retrieval-corpus must be one of: summaries, code, all")
+    try:
+        return normalize_retrieval_corpus(raw_value)
+    except ValueError as exc:
+        raise ValueError("--retrieval-corpus must be one of: summaries, code, all") from exc
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,7 +90,7 @@ def parse_args() -> argparse.Namespace:
             "graph-service-aware,hybrid,hybrid-service-aware,keyword-service-aware,vector-service-aware. "
             "Keyword variants: keyword (default fts), keyword-fts, keyword-bm25. "
             "Hybrid variants: hybrid (default fts), hybrid-fts, hybrid-bm25. "
-            "Graph variants: graph-adaptive, graph-fixed. "
+            "Graph variant: graph. "
             "Service-aware variant: append -service-aware (e.g. vector-service-aware)."
         ),
     )

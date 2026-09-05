@@ -27,7 +27,7 @@ class HybridSearchEndpoint:
         vec_result, kw_result, graph_result = await asyncio.gather(
             self.search_client.search(request),
             self.search_client.search_keyword(request),
-            self.graph_client.search(request, hop_policy_mode="fixed"),
+            self.graph_client.search(request),
             return_exceptions=True,
         )
 

@@ -37,8 +37,6 @@ class StrategyRunner:
         "hybrid-bm25": "/search/hybrid",
         "hybrid-bm25-structured-first": "/search/hybrid",
         "graph": "/search/graph",
-        "graph-adaptive": "/search/graph",
-        "graph-fixed": "/search/graph",
     }
 
     def __init__(self, base_url: str, timeout_seconds: int = 60, retrieval_corpus: str = "summaries") -> None:
@@ -65,11 +63,7 @@ class StrategyRunner:
         if sources:
             params["source"] = ",".join(sources)
         params["corpus"] = retrieval_corpus
-        if strategy in {"graph", "graph-fixed"}:
-            params["hop_policy"] = "fixed"
-        elif strategy == "graph-adaptive":
-            params["hop_policy"] = "adaptive"
-        elif strategy in {"keyword-fts", "hybrid-fts"}:
+        if strategy in {"keyword-fts", "hybrid-fts"}:
             params["keyword_ranker"] = "fts"
         elif strategy in {"keyword-bm25", "hybrid-bm25", "hybrid-bm25-structured-first"}:
             params["keyword_ranker"] = "bm25"
