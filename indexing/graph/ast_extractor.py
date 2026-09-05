@@ -70,77 +70,43 @@ class AstLocalExtractor:
         if suffix != ".cs":
             return []
 
-        symbols = self._extract_csharp_symbols(source_code)
         triples: list[Triple] = []
         seen: set[tuple[str, str, str, str, str]] = set()
 
-        for symbol_name, symbol_label in symbols:
-            owner_predicate = OWNERSHIP_PREDICATES.get(symbol_label)
-            if not owner_predicate:
-                continue
+        def emit(subject: str, subject_label: str, predicate: str, obj: str, object_label: str, confidence: float) -> None:
             self._add_triple(
                 triples=triples,
                 seen=seen,
-                subject=repo_name,
-                subject_label="REPO",
-                predicate=owner_predicate,
-                obj=symbol_name,
-                object_label=symbol_label,
-                confidence=AST_OWNERSHIP_CONFIDENCE,
-                source_path=document_title,
-                source_repo=repo_name,
-            )
-
-        for (
-            subject_name,
-            subject_label,
-            predicate,
-            object_name,
-            object_label,
-        ) in self._extract_csharp_local_relations(source_code):
-            self._add_triple(
-                triples=triples,
-                seen=seen,
-                subject=subject_name,
+                subject=subject,
                 subject_label=subject_label,
                 predicate=predicate,
-                obj=object_name,
+                obj=obj,
                 object_label=object_label,
-                confidence=AST_RELATION_CONFIDENCE,
+                confidence=confidence,
                 source_path=document_title,
                 source_repo=repo_name,
             )
+
+        for symbol_name, symbol_label in self._extract_csharp_symbols(source_code):
+            owner_predicate = OWNERSHIP_PREDICATES.get(symbol_label)
+            if owner_predicate:
+                emit(repo_name, "REPO", owner_predicate, symbol_name, symbol_label, AST_OWNERSHIP_CONFIDENCE)
+
+        for subject_name, subject_label, predicate, object_name, object_label in self._extract_csharp_local_relations(
+            source_code
+        ):
+            emit(subject_name, subject_label, predicate, object_name, object_label, AST_RELATION_CONFIDENCE)
 
         for actor_name, actor_label, predicate, table_name in self._extract_csharp_actor_table_relations(
-            source_code,
-            known_tables,
+            source_code, known_tables
         ):
-            self._add_triple(
-                triples=triples,
-                seen=seen,
-                subject=actor_name,
-                subject_label=actor_label,
-                predicate=predicate,
-                obj=table_name,
-                object_label="TABLE",
-                confidence=AST_RELATION_CONFIDENCE,
-                source_path=document_title,
-                source_repo=repo_name,
-            )
+            emit(actor_name, actor_label, predicate, table_name, "TABLE", AST_RELATION_CONFIDENCE)
 
         for flag_name in extract_feature_flags_from_csharp(source_code):
-            self._add_triple(
-                triples=triples,
-                seen=seen,
-                subject=repo_name,
-                subject_label="REPO",
-                predicate="USES_FEATURE_FLAG",
-                obj=flag_name,
-                object_label="FEATURE_FLAG",
-                confidence=AST_FEATURE_FLAG_CONFIDENCE,
-                source_path=document_title,
-                source_repo=repo_name,
-            )
+            emit(repo_name, "REPO", "USES_FEATURE_FLAG", flag_name, "FEATURE_FLAG", AST_FEATURE_FLAG_CONFIDENCE)
+
+        for api_name in self._extract_refit_api_calls(source_code):
+            emit(repo_name, "REPO", "CALLS_API", api_name, "API", AST_RELATION_CONFIDENCE)
 
         return triples
 
@@ -266,6 +232,10 @@ class AstLocalExtractor:
     def _classify_class_symbol(class_name: str, bases: str) -> str | None:
         if AstLocalExtractor._is_saga_base(bases):
             return "SAGA"
+        if AstLocalExtractor._is_base_interface(bases, "IRequest"):
+            return "COMMAND"
+        if AstLocalExtractor._is_base_interface(bases, "INotification"):
+            return "EVENT"
         return AstLocalExtractor._classify_symbol(class_name)
 
     @staticmethod
@@ -281,6 +251,19 @@ class AstLocalExtractor:
         )
 
     @staticmethod
+    def _is_base_interface(bases: str, interface_name: str) -> bool:
+        """Return whether a base list includes a MediatR marker interface."""
+        token = (bases or "").strip()
+        if not token:
+            return False
+        return bool(
+            re.search(
+                rf"(?:^|[,\s])(?:global::)?(?:[A-Za-z_][A-Za-z0-9_]*\.)*{re.escape(interface_name)}\b\s*(?:<[^>]*>)?\s*(?:,|$)",
+                token,
+            )
+        )
+
+    @staticmethod
     def _extract_csharp_local_relations(source_code: str) -> list[tuple[str, str, str, str, str]]:
         if not source_code.strip():
             return []
@@ -291,9 +274,18 @@ class AstLocalExtractor:
             flags=re.MULTILINE,
         )
         interface_pattern = re.compile(
-            r"\b(IHandleMessages|IAmStartedByMessages)\s*<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*>"
+            r"\b(IHandleMessages|IAmStartedByMessages|IRequestHandler|INotificationHandler)"
+            r"\s*<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(?:,\s*[A-Za-z_][A-Za-z0-9_.<>]*\s*)?>"
         )
-        for class_match in class_header_pattern.finditer(source_code):
+
+        class_headers = list(class_header_pattern.finditer(source_code))
+        local_labels: dict[str, str] = {}
+        for class_match in class_headers:
+            label = AstLocalExtractor._classify_class_symbol(class_match.group(1), class_match.group(2) or "")
+            if label:
+                local_labels[class_match.group(1)] = label
+
+        for class_match in class_headers:
             class_name = class_match.group(1)
             bases = class_match.group(2) or ""
             class_label = AstLocalExtractor._classify_class_symbol(class_name, bases)
@@ -301,7 +293,7 @@ class AstLocalExtractor:
                 continue
             for iface_name, message_type in interface_pattern.findall(bases):
                 symbol_name = message_type.split(".")[-1]
-                symbol_label = AstLocalExtractor._classify_symbol(symbol_name)
+                symbol_label = local_labels.get(symbol_name) or AstLocalExtractor._classify_symbol(symbol_name)
                 if not symbol_label:
                     continue
                 relation = AstLocalExtractor._resolve_handler_relation(
@@ -318,6 +310,23 @@ class AstLocalExtractor:
                 seen.add(key)
                 relations.append(key)
         return relations
+
+    @staticmethod
+    def _extract_refit_api_calls(source_code: str) -> list[str]:
+        """Return interfaces that contain Refit HTTP verb attributes."""
+        if not source_code.strip():
+            return []
+        interface_pattern = re.compile(r"\binterface\s+([A-Za-z_][A-Za-z0-9_]*)")
+        refit_attribute_pattern = re.compile(r"\[(?:Get|Post|Put|Delete|Patch|Head|Options)\(")
+
+        matches = list(interface_pattern.finditer(source_code))
+        names: list[str] = []
+        for index, match in enumerate(matches):
+            body_end = matches[index + 1].start() if index + 1 < len(matches) else len(source_code)
+            body = source_code[match.end() : body_end]
+            if refit_attribute_pattern.search(body):
+                names.append(match.group(1))
+        return names
 
     @staticmethod
     def _extract_csharp_actor_table_relations(
@@ -517,7 +526,7 @@ class AstLocalExtractor:
         writes: set[str],
     ) -> None:
         dbset_pattern = re.compile(
-            r"\b[_A-Za-z][_A-Za-z0-9]*DbContext[_A-Za-z0-9]*\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b",
+            r"\b[_A-Za-z][_A-Za-z0-9]*Context\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b",
             re.IGNORECASE,
         )
         for dbset in dbset_pattern.findall(actor_body):
@@ -526,7 +535,7 @@ class AstLocalExtractor:
                 continue
             reads.add(resolved)
             write_call_pattern = re.compile(
-                rf"\b{re.escape(dbset)}\s*\.\s*(?:Add|AddAsync|AddRange|Update|UpdateRange|Remove|RemoveRange|ExecuteUpdate|ExecuteDelete)\s*\(",
+                rf"\b{re.escape(dbset)}\s*\.\s*(?:Add|Update|Remove|Insert|ExecuteUpdate|ExecuteDelete)(?:Range)?(?:Async)?\s*\(",
                 re.IGNORECASE,
             )
             if write_call_pattern.search(actor_body):

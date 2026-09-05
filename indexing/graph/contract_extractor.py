@@ -20,13 +20,6 @@ from indexing.graph.config import (
     CONTRACT_FLAG_CONFIDENCE,
     CONTRACT_TABLE_CONFIDENCE,
     CONTRACT_TOPIC_CONFIDENCE,
-    SOURCE_PRIORITY_APPSETTINGS_BASE,
-    SOURCE_PRIORITY_APPSETTINGS_PROD,
-    SOURCE_PRIORITY_AST,
-    SOURCE_PRIORITY_ASYNCAPI,
-    SOURCE_PRIORITY_CONFIGMAP,
-    SOURCE_PRIORITY_DEFAULT,
-    SOURCE_PRIORITY_INGRESS,
 )
 from indexing.graph.csharp_feature_flags import extract_feature_flags_from_csharp
 from indexing.graph.graph_canonicalizer import GraphCanonicalizer
@@ -64,25 +57,31 @@ TOPIC_KEYS = {"topics", "kafkatopic", "kafkatopics", "consumers", "producers"}
 URL_SKIP_KEY_FRAGMENTS = ("okta", "health", "relic", "pdp", "swagger")
 URL_SKIP_HOST_FRAGMENTS = ("okta", "login", "auth", "identity")
 
+
+def _dedupe_normalized(values: list[str], normalize_fn: Callable[[str], str]) -> list[str]:
+    """Normalize each value, drop empties, and dedupe on the normalized form."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = normalize_fn(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(normalized)
+    return cleaned
+
 class ContractGlobalExtractor:
     """Extracts graph triples from source code and structured summary content."""
 
     _canonicalizer = GraphCanonicalizer()
-
-    def __init__(self) -> None:
-        self._repo_source_kinds: dict[str, set[str]] = {}
-        self._repo_entity_priorities: dict[str, dict[str, dict[str, int]]] = {}
-
-    def register_repo_files(self, repo_name: str, file_paths: list[str]) -> None:
-        repo = clean_graph_text(repo_name)
-        if not repo:
-            return
-        kinds: set[str] = set()
-        for path in file_paths:
-            kind = self._derive_contract_source_kind(path)
-            if kind != SOURCE_KIND_CONTRACT:
-                kinds.add(kind)
-        self._repo_source_kinds[repo] = kinds
+    _KNOWN_SECTION_NAMES = (
+        SECTION_CONFIGURATION,
+        SECTION_FEATURE_FLAGS,
+        SECTION_TOPICS_CONSUMED,
+        SECTION_TOPICS_PRODUCED,
+        SECTION_EXTERNAL_APIS,
+        SECTION_PUBLIC_API,
+    )
 
     def extract_contract(
         self,
@@ -173,7 +172,6 @@ class ContractGlobalExtractor:
             SECTION_TOPICS_CONSUMED,
             source_kind=source_kind,
             source_code=source_code,
-            repo_name=repo_name,
         ):
             add_triple(
                 subject=repo_name,
@@ -189,7 +187,6 @@ class ContractGlobalExtractor:
             SECTION_TOPICS_PRODUCED,
             source_kind=source_kind,
             source_code=source_code,
-            repo_name=repo_name,
         ):
             add_triple(
                 subject=repo_name,
@@ -204,7 +201,6 @@ class ContractGlobalExtractor:
             sections,
             source_kind=source_kind,
             source_code=source_code,
-            repo_name=repo_name,
         ):
             add_triple(
                 subject=repo_name,
@@ -219,7 +215,6 @@ class ContractGlobalExtractor:
             sections,
             source_kind=source_kind,
             source_code=source_code,
-            repo_name=repo_name,
         ):
             add_triple(
                 subject=repo_name,
@@ -385,17 +380,24 @@ class ContractGlobalExtractor:
         *,
         source_kind: str,
         source_code: str,
-        repo_name: str,
     ) -> list[str]:
         values: list[str] = []
-        if self._should_use_source_for_topics(repo_name=repo_name, source_kind=source_kind):
+        used_structured_source = False
+        topic_source_kinds = {SOURCE_KIND_ASYNCAPI, SOURCE_KIND_CONFIGMAP, SOURCE_KIND_APPSETTINGS_PROD, SOURCE_KIND_APPSETTINGS_BASE}
+        if source_kind in topic_source_kinds and source_code.strip():
             if source_kind == SOURCE_KIND_ASYNCAPI:
-                values.extend(self._extract_asyncapi_channels(source_code))
+                used_structured_source = True
+                asyncapi_produced, asyncapi_consumed = self._parse_asyncapi_operations(source_code)
+                if section_name == SECTION_TOPICS_PRODUCED:
+                    values.extend(asyncapi_produced)
+                elif section_name == SECTION_TOPICS_CONSUMED:
+                    values.extend(asyncapi_consumed)
             elif source_kind in {
                 SOURCE_KIND_CONFIGMAP,
                 SOURCE_KIND_APPSETTINGS_PROD,
                 SOURCE_KIND_APPSETTINGS_BASE,
             }:
+                used_structured_source = True
                 produced, consumed = self._extract_topics_from_source_config(
                     source_code=source_code,
                     source_kind=source_kind,
@@ -405,7 +407,7 @@ class ContractGlobalExtractor:
                 elif section_name == SECTION_TOPICS_CONSUMED:
                     values.extend(consumed)
 
-        if not values:
+        if not values and not used_structured_source:
             body = sections.get(section_name, "")
             if not body:
                 return []
@@ -428,25 +430,7 @@ class ContractGlobalExtractor:
                     if re.fullmatch(r"[A-Za-z0-9._/-]+", candidate):
                         values.append(candidate)
 
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            normalized = self._canonicalizer.canonicalize_topic_name(value)
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            cleaned.append(normalized)
-        entity_kind = (
-            "topics_produced"
-            if section_name == SECTION_TOPICS_PRODUCED
-            else "topics_consumed"
-        )
-        return self._apply_layered_entity_selection(
-            repo_name=repo_name,
-            entity_kind=entity_kind,
-            source_kind=source_kind,
-            values=cleaned,
-        )
+        return _dedupe_normalized(values, self._canonicalizer.canonicalize_topic_name)
 
     def _extract_api_values(
         self,
@@ -454,35 +438,26 @@ class ContractGlobalExtractor:
         *,
         source_kind: str,
         source_code: str,
-        repo_name: str,
     ) -> list[str]:
         if source_kind in {SOURCE_KIND_ASYNCAPI, SOURCE_KIND_INGRESS}:
             return []
         raw_external: list[str] = []
         raw_urls: list[str] = []
-        config_key_apis: set[str] = set()
-        if self._should_use_source_for_apis(repo_name=repo_name, source_kind=source_kind):
-            if source_kind in {
-                SOURCE_KIND_CONFIGMAP,
-                SOURCE_KIND_APPSETTINGS_PROD,
-                SOURCE_KIND_APPSETTINGS_BASE,
-            }:
-                url_entries = self._extract_api_urls_from_config_source(source_code, source_kind=source_kind)
-                raw_urls.extend(url for _, url in url_entries)
-                for key_name, _ in url_entries:
-                    key_api = self._canonicalizer.canonicalize_api_name(key_name)
-                    if key_api:
-                        config_key_apis.add(key_api)
+        if source_kind in {SOURCE_KIND_CONFIGMAP, SOURCE_KIND_APPSETTINGS_PROD, SOURCE_KIND_APPSETTINGS_BASE}:
+            for key_name, url in self._extract_api_urls_from_config_source(source_code, source_kind=source_kind):
+                # A config entry's key and its URL value often name the same call two
+                # different ways (e.g. "InternalLabResultApiUrl" -> "https://rms-ilr-api...").
+                # Emit both: the key matches what the code side's own citations already
+                # canonicalize to, while the URL is a cross-repo-consistent anchor (derived
+                # from the actual target host, not each repo's own naming choice) -- needed
+                # when different repos name the same real target differently. Identical
+                # canonicalizations collapse naturally via the seen-dedup below.
+                raw_urls.append(key_name)
+                raw_urls.append(url)
 
         if not raw_urls:
             raw_external = self._extract_section_values(sections, SECTION_EXTERNAL_APIS)
             raw_urls = self._extract_urls(sections.get(SECTION_CONFIGURATION, ""))
-
-        trusted_url_apis: set[str] = set()
-        for value in raw_urls:
-            normalized = self._canonicalizer.canonicalize_api_name(value)
-            if normalized:
-                trusted_url_apis.add(normalized)
 
         values: list[str] = list(raw_urls)
         values.extend(raw_external)
@@ -496,18 +471,13 @@ class ContractGlobalExtractor:
         for normalized in normalized_candidates:
             if normalized.startswith("i") and len(normalized) > 5:
                 alias = normalized[1:]
-                if alias in trusted_url_apis or alias in config_key_apis or alias in normalized_set:
+                if alias in normalized_set:
                     normalized = alias
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
             cleaned.append(normalized)
-        return self._apply_layered_entity_selection(
-            repo_name=repo_name,
-            entity_kind="apis",
-            source_kind=source_kind,
-            values=cleaned,
-        )
+        return cleaned
 
     def _extract_feature_flag_values(
         self,
@@ -515,52 +485,38 @@ class ContractGlobalExtractor:
         *,
         source_kind: str,
         source_code: str,
-        repo_name: str,
     ) -> list[str]:
         values: list[str] = []
         if source_kind in {SOURCE_KIND_AST, SOURCE_KIND_CONTRACT}:
             values.extend(extract_feature_flags_from_csharp(source_code))
-        elif self._should_use_source_for_flags(repo_name=repo_name, source_kind=source_kind):
-            if source_kind in {
-                SOURCE_KIND_CONFIGMAP,
-                SOURCE_KIND_APPSETTINGS_PROD,
-                SOURCE_KIND_APPSETTINGS_BASE,
-            }:
-                values.extend(
-                    self._extract_feature_flags_from_config_source(
-                        source_code=source_code,
-                        source_kind=source_kind,
-                    )
-                )
+        elif source_kind in {SOURCE_KIND_CONFIGMAP, SOURCE_KIND_APPSETTINGS_PROD, SOURCE_KIND_APPSETTINGS_BASE}:
+            values.extend(self._extract_feature_flags_from_config_source(source_code=source_code, source_kind=source_kind))
 
         if not values:
             values = self._extract_section_values(sections, SECTION_FEATURE_FLAGS)
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            normalized = self._canonicalizer.canonicalize_feature_flag_name(value)
-            if not normalized:
-                continue
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            cleaned.append(normalized)
-        return self._apply_layered_entity_selection(
-            repo_name=repo_name,
-            entity_kind="flags",
-            source_kind=source_kind,
-            values=cleaned,
-        )
+        return _dedupe_normalized(values, self._canonicalizer.canonicalize_feature_flag_name)
 
     @staticmethod
-    def _extract_asyncapi_channels(source_code: str) -> list[str]:
+    def _parse_asyncapi_operations(source_code: str) -> tuple[list[str], list[str]]:
+        """Parse an AsyncAPI 3.x document into (produced, consumed) channel names.
+
+        AsyncAPI 3.x moves publish/subscribe direction out of `channels:` (which
+        only declares channel names/addresses) into a separate `operations:`
+        block, where each operation has an `action: send|receive` and a
+        `channel: $ref: '#/channels/<key>'`. Direction cannot be determined
+        from `channels:` alone -- older code here (and older AsyncAPI 2.x
+        documents, which nest publish/subscribe directly under each channel)
+        is not handled and yields no results.
+        """
         if not source_code.strip():
-            return []
+            return [], []
         lines = source_code.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+
+        channel_names: dict[str, str] = {}
         in_channels = False
         channels_indent = -1
-        seen: set[str] = set()
-        channels: list[str] = []
+        current_key: str | None = None
+        current_key_indent = -1
         for line in lines:
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
@@ -573,18 +529,53 @@ class ContractGlobalExtractor:
                 continue
             if indent <= channels_indent:
                 break
-            match = re.match(r"^(\s*)([^:#][^:]*):\s*$", line)
-            if not match:
+            key_match = re.match(r"^(\s*)([^:#][^:]*):\s*$", line)
+            if key_match and len(key_match.group(1)) == channels_indent + 2:
+                current_key = key_match.group(2).strip().strip("'\"")
+                current_key_indent = len(key_match.group(1))
+                if current_key:
+                    channel_names.setdefault(current_key, current_key)
                 continue
-            key_indent = len(match.group(1))
-            if key_indent != channels_indent + 2:
+            addr_match = re.match(r"^(\s*)address:\s*(.+?)\s*$", line)
+            if addr_match and current_key and len(addr_match.group(1)) > current_key_indent:
+                address = addr_match.group(2).strip().strip("'\"")
+                if address:
+                    channel_names[current_key] = address
+
+        produced: list[str] = []
+        consumed: list[str] = []
+        in_operations = False
+        operations_indent = -1
+        pending_action: str | None = None
+        for line in lines:
+            if not line.strip() or line.lstrip().startswith("#"):
                 continue
-            channel_name = match.group(2).strip().strip("'\"")
-            if not channel_name or channel_name in seen:
+            indent = len(line) - len(line.lstrip(" "))
+            stripped = line.strip()
+            if not in_operations:
+                if stripped == "operations:":
+                    in_operations = True
+                    operations_indent = indent
                 continue
-            seen.add(channel_name)
-            channels.append(channel_name)
-        return channels
+            if indent <= operations_indent:
+                break
+            op_match = re.match(r"^(\s*)([^:#][^:]*):\s*$", line)
+            if op_match and len(op_match.group(1)) == operations_indent + 2:
+                pending_action = None
+                continue
+            action_match = re.match(r"^\s*action:\s*(send|receive)\s*$", line)
+            if action_match:
+                pending_action = action_match.group(1)
+                continue
+            ref_match = re.match(r"^\s*\$ref:\s*['\"]?#/channels/([^'\"\s]+)['\"]?\s*$", line)
+            if ref_match and pending_action:
+                channel_key = ref_match.group(1)
+                resolved = channel_names.get(channel_key, channel_key)
+                target = produced if pending_action == "send" else consumed
+                if resolved not in target:
+                    target.append(resolved)
+
+        return produced, consumed
 
     @staticmethod
     def _parse_sections(summary: str) -> dict[str, str]:
@@ -621,6 +612,16 @@ class ContractGlobalExtractor:
     @staticmethod
     def _split_heading_and_body(raw_heading: str) -> tuple[str, str]:
         normalized = raw_heading.strip().lower()
+
+        # A heading's descriptive sentence isn't always set off by " - " or " | "
+        # (e.g. "## External API Calls All clients registered via Refit...") --
+        # check known section names as a prefix first so that case still splits
+        # correctly instead of the whole line becoming an unrecognized section key.
+        for known in ContractGlobalExtractor._KNOWN_SECTION_NAMES:
+            match = re.match(rf"^{re.escape(known)}\b[\s:-]*(.*)$", normalized)
+            if match:
+                return known, match.group(1).strip(" -:")
+
         inline_body = ""
         if " - " in normalized:
             section_name, inline_body = normalized.split(" - ", 1)
@@ -674,30 +675,14 @@ class ContractGlobalExtractor:
                 else:
                     values.append(candidate)
 
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            normalized = clean_graph_text(value)
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            cleaned.append(normalized)
-        return cleaned
+        return _dedupe_normalized(values, clean_graph_text)
 
     @staticmethod
     def _extract_urls(text: str) -> list[str]:
         if not text:
             return []
         urls = re.findall(r"https?://[^\s`)]+", text)
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for raw_url in urls:
-            value = raw_url.rstrip(".,;:")
-            if value in seen:
-                continue
-            seen.add(value)
-            cleaned.append(value)
-        return cleaned
+        return _dedupe_normalized(urls, lambda raw_url: raw_url.rstrip(".,;:"))
 
     @classmethod
     def _extract_public_api_targets(cls, text: str) -> list[str]:
@@ -713,6 +698,16 @@ class ContractGlobalExtractor:
                 return
             seen.add(normalized)
             values.append(normalized)
+
+        def add_host_path_products(hosts_pattern: str, paths_pattern: str) -> None:
+            """A host and path stated as separate tokens (rather than paired in
+            one match) name every combination found, plus each bare host."""
+            hosts = [t.strip().rstrip("/") for t in re.findall(hosts_pattern, text, flags=re.IGNORECASE) if "." in t]
+            paths = [t.strip() for t in re.findall(paths_pattern, text, flags=re.IGNORECASE) if t.strip().startswith("/")]
+            for host in hosts:
+                add(f"https://{host}")
+                for path in paths:
+                    add(f"https://{host}{path}")
 
         for url in cls._extract_urls(text):
             add(url)
@@ -733,101 +728,10 @@ class ContractGlobalExtractor:
                     continue
                 add(f"https://{host}{path}")
 
-        hosts = [token.strip().rstrip("/") for token in re.findall(r"host\s+`([^`]+)`", text, flags=re.IGNORECASE)]
-        paths = [token.strip() for token in re.findall(r"path(?:\s+prefix)?\s+`([^`]+)`", text, flags=re.IGNORECASE)]
-        valid_hosts = [host for host in hosts if "." in host]
-        valid_paths = [path for path in paths if path.startswith("/")]
-        for host in valid_hosts:
-            add(f"https://{host}")
-            for path in valid_paths:
-                add(f"https://{host}{path}")
-
-        yaml_hosts = [
-            token.strip().rstrip("/")
-            for token in re.findall(
-                r"(?mi)^\s*-?\s*host:\s*['\"]?([A-Za-z0-9._-]+)",
-                text,
-            )
-        ]
-        yaml_paths = [
-            token.strip()
-            for token in re.findall(
-                r"(?mi)^\s*-?\s*path:\s*['\"]?(/[^'\"#\s]*)",
-                text,
-            )
-        ]
-        valid_yaml_hosts = [host for host in yaml_hosts if "." in host]
-        valid_yaml_paths = [path for path in yaml_paths if path.startswith("/")]
-        for host in valid_yaml_hosts:
-            add(f"https://{host}")
-            for path in valid_yaml_paths:
-                add(f"https://{host}{path}")
+        add_host_path_products(r"host\s+`([^`]+)`", r"path(?:\s+prefix)?\s+`([^`]+)`")
+        add_host_path_products(r"(?m)^\s*-?\s*host:\s*['\"]?([A-Za-z0-9._-]+)", r"(?m)^\s*-?\s*path:\s*['\"]?(/[^'\"#\s]*)")
 
         return values
-
-    def _should_use_source_for_topics(self, *, repo_name: str, source_kind: str) -> bool:
-        return source_kind in {
-            SOURCE_KIND_ASYNCAPI,
-            SOURCE_KIND_CONFIGMAP,
-            SOURCE_KIND_APPSETTINGS_PROD,
-            SOURCE_KIND_APPSETTINGS_BASE,
-        }
-
-    def _should_use_source_for_apis(self, *, repo_name: str, source_kind: str) -> bool:
-        return source_kind in {
-            SOURCE_KIND_CONFIGMAP,
-            SOURCE_KIND_APPSETTINGS_PROD,
-            SOURCE_KIND_APPSETTINGS_BASE,
-            SOURCE_KIND_INGRESS,
-        }
-
-    def _should_use_source_for_flags(self, *, repo_name: str, source_kind: str) -> bool:
-        return source_kind in {
-            SOURCE_KIND_CONFIGMAP,
-            SOURCE_KIND_APPSETTINGS_PROD,
-            SOURCE_KIND_APPSETTINGS_BASE,
-        }
-
-    def _apply_layered_entity_selection(
-        self,
-        *,
-        repo_name: str,
-        entity_kind: str,
-        source_kind: str,
-        values: list[str],
-    ) -> list[str]:
-        if not values:
-            return []
-        repo_state = self._repo_entity_priorities.setdefault(repo_name, {})
-        entity_state = repo_state.setdefault(entity_kind, {})
-        priority = self._source_priority(source_kind)
-        selected: list[str] = []
-
-        for value in values:
-            normalized = value.lower()
-            previous_priority = entity_state.get(normalized)
-            if previous_priority is not None and previous_priority > priority:
-                continue
-            entity_state[normalized] = priority
-            selected.append(value)
-
-        return selected
-
-    @staticmethod
-    def _source_priority(source_kind: str) -> int:
-        if source_kind == SOURCE_KIND_ASYNCAPI:
-            return SOURCE_PRIORITY_ASYNCAPI
-        if source_kind == SOURCE_KIND_CONFIGMAP:
-            return SOURCE_PRIORITY_CONFIGMAP
-        if source_kind == SOURCE_KIND_APPSETTINGS_PROD:
-            return SOURCE_PRIORITY_APPSETTINGS_PROD
-        if source_kind == SOURCE_KIND_APPSETTINGS_BASE:
-            return SOURCE_PRIORITY_APPSETTINGS_BASE
-        if source_kind == SOURCE_KIND_AST:
-            return SOURCE_PRIORITY_AST
-        if source_kind == SOURCE_KIND_INGRESS:
-            return SOURCE_PRIORITY_INGRESS
-        return SOURCE_PRIORITY_DEFAULT
 
     def _extract_topics_from_source_config(
         self,

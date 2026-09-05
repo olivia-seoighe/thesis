@@ -138,6 +138,20 @@ ALTER TABLE document_embeddings
     FOREIGN KEY (document_id, retrieval_corpus) REFERENCES document_metadata(document_id, retrieval_corpus)
     ON DELETE CASCADE;
 
+-- Precomputed embeddings for graph node names, used by the embedding-based
+-- entity linker to bridge naturally-phrased queries to graph entities that
+-- token-based exact/substring matching alone cannot find.
+CREATE TABLE IF NOT EXISTS graph_node_name_embeddings (
+    node_key       TEXT PRIMARY KEY,
+    node_label     TEXT NOT NULL,
+    node_name      TEXT NOT NULL,
+    confidence     DOUBLE PRECISION NOT NULL,
+    evidence_count INTEGER NOT NULL,
+    embedding      halfvec(:embedding_dim),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gnne_label ON graph_node_name_embeddings (node_label);
+
 -- Conversation history (persisted so history survives service restarts)
 CREATE TABLE IF NOT EXISTS conversations (
     id          TEXT PRIMARY KEY,

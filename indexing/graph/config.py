@@ -2,7 +2,6 @@
 
 Tuning guide::
 - Confidence constants affect evidence trust ranking during graph ingest.
-- Source priority constants resolve conflicts when multiple sources describe the same entity.
 """
 
 from __future__ import annotations
@@ -39,15 +38,3 @@ CONTRACT_TABLE_CONFIDENCE: Final[float] = float(
 CONTRACT_CSPROJ_METADATA_CONFIDENCE: Final[float] = float(
     os.getenv("GRAPH_CONTRACT_CSPROJ_METADATA_CONFIDENCE", "0.96")
 )  # .csproj declarations are authoritative for framework/package metadata.
-
-SOURCE_PRIORITY_ASYNCAPI: Final[int] = int(os.getenv("GRAPH_SOURCE_PRIORITY_ASYNCAPI", "7"))  # Rank 7: canonical source for message-channel topology.
-SOURCE_PRIORITY_AST: Final[int] = int(os.getenv("GRAPH_SOURCE_PRIORITY_AST", "6"))  # Rank 6: strong local truth for code-level behavior.
-SOURCE_PRIORITY_CONFIGMAP: Final[int] = int(os.getenv("GRAPH_SOURCE_PRIORITY_CONFIGMAP", "5"))  # Rank 5: deployment config with service-specific wiring.
-SOURCE_PRIORITY_APPSETTINGS_PROD: Final[int] = int(
-    os.getenv("GRAPH_SOURCE_PRIORITY_APPSETTINGS_PROD", "4")
-)  # Rank 4: production app settings, useful but environment-specific.
-SOURCE_PRIORITY_APPSETTINGS_BASE: Final[int] = int(
-    os.getenv("GRAPH_SOURCE_PRIORITY_APPSETTINGS_BASE", "3")
-)  # Rank 3: baseline app settings, broader but less environment-grounded.
-SOURCE_PRIORITY_INGRESS: Final[int] = int(os.getenv("GRAPH_SOURCE_PRIORITY_INGRESS", "2"))  # Rank 2: external exposure view, not full internal topology.
-SOURCE_PRIORITY_DEFAULT: Final[int] = int(os.getenv("GRAPH_SOURCE_PRIORITY_DEFAULT", "1"))  # Rank 1: fallback for unknown/least-specific source kinds.

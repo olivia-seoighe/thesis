@@ -272,7 +272,7 @@ class GraphCanonicalizer:
                 return candidate.group(1)
             if seg.startswith("v") and seg[1:].isdigit():
                 continue
-            return f"{seg}api"
+            return self._ensure_api_suffix(seg)
 
         host_parts = [part for part in host.split(".") if part]
         if not host_parts:
@@ -286,4 +286,17 @@ class GraphCanonicalizer:
         candidate = re.search(r"([a-z0-9]+api(?:v[0-9]+)?)", host_head)
         if candidate:
             return candidate.group(1)
-        return f"{host_head}api"
+        return self._ensure_api_suffix(host_head)
+
+    @staticmethod
+    def _ensure_api_suffix(value: str) -> str:
+        """Append 'api' only if the hyphen/underscore-stripped name doesn't already end with it.
+
+        The regex-based match above can't see across a '-'/'_' boundary (e.g. "dps-operations-api"
+        has no unbroken run of [a-z0-9]+ ending in "api"), so without this check the naive fallback
+        would double-suffix names like that into "dps-operations-apiapi".
+        """
+        compact = re.sub(r"[_-]+", "", value)
+        if compact.endswith("api"):
+            return compact
+        return f"{value}api"
