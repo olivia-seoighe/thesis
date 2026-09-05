@@ -242,10 +242,6 @@ async def main() -> None:
             )
             source = _get_source(data, summaries_file)
             logger.info(f"Loaded {len(files)} files from {summaries_file} (source={source})")
-            graph_extractor.register_repo_files(
-                source,
-                [str(file_entry.get("file_path", "")) for file_entry in files],
-            )
             if graph_indexing_enabled:
                 await graph_indexer.upsert_service_node(source)
 
