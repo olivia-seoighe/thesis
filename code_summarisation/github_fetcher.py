@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Iterator, List, Optional
+from typing import List, Optional
 
 import httpx
 import yaml
@@ -130,6 +130,25 @@ class GitHubFetcher:
         log.info(f"Found {len(files)} qualifying files in {repo}@{ref}")
         return files
 
+    async def list_pull_request_files(self, repo: str, pr_number: int) -> List[dict]:
+        """Return changed files from a GitHub pull request."""
+        files: List[dict] = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30) as client:
+            while True:
+                url = f"{self.BASE}/repos/{repo}/pulls/{pr_number}/files"
+                resp = await client.get(
+                    url,
+                    headers=self._headers,
+                    params={"per_page": 100, "page": page},
+                )
+                resp.raise_for_status()
+                batch = resp.json()
+                files.extend(batch)
+                if len(batch) < 100:
+                    return files
+                page += 1
+
     async def fetch_content(self, repo: str, path: str, ref: str = "main") -> str:
         """Fetch raw file content."""
         url = f"{self.BASE}/repos/{repo}/contents/{path}?ref={ref}"
@@ -162,3 +181,42 @@ class GitHubFetcher:
                 log.warning(f"Failed to fetch {path}: {exc}")
 
         return results
+
+    async def fetch_pull_request_changes(
+        self,
+        repo: str,
+        pr_number: int,
+        ref: str = "main",
+    ) -> tuple[List[FetchedFile], list[str], int]:
+        """Fetch summarised files and deleted paths from a merged pull request."""
+        config = _load_config()
+        changed = await self.list_pull_request_files(repo, pr_number)
+        files: List[FetchedFile] = []
+        deleted_paths: list[str] = []
+        skipped = 0
+
+        for entry in changed:
+            path = entry.get("filename", "")
+            status = entry.get("status", "")
+            if status in {"removed", "renamed"} and entry.get("previous_filename"):
+                deleted_paths.append(entry["previous_filename"])
+            if status == "removed":
+                continue
+            if not path or not _passes_filter(path, config):
+                skipped += 1
+                continue
+            try:
+                content = await self.fetch_content(repo, path, ref)
+            except Exception as exc:
+                log.warning("Failed to fetch PR file %s: %s", path, exc)
+                skipped += 1
+                continue
+            files.append(
+                FetchedFile(
+                    file_path=path,
+                    content=content,
+                    url=f"https://github.com/{repo}/blob/{ref}/{path}",
+                    language=_detect_language(path),
+                )
+            )
+        return files, deleted_paths, skipped

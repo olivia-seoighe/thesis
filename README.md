@@ -6,7 +6,7 @@ This research investigates retrieval strategies — vector, keyword, hybrid, and
 
 ### Data Pipeline — Code Summarisation
 
-Raw source code is too large and noisy to embed directly. The summarisation service fetches each configured repository from GitHub and uses an LLM to produce structured markdown summaries for each source file (purpose, business logic, service dependencies, data models). These are written to `summaries/<repo>/summaries.json`.
+Raw source code is too large and noisy to embed directly. The summarisation service fetches each configured repository from GitHub and uses an LLM to produce structured markdown summaries for each source file (purpose, business logic, service dependencies, data models). These are written to `summaries/<repo>/summaries.json`. A simplified GitHub webhook endpoint can refresh summaries after merged pull requests, showing how the production pattern keeps architecture documentation from going stale.
 
 A knowledge graph is derived from the code summaries (entity and relationship extraction → `graph.json`) for use in the GraphRAG retrieval path.
 
@@ -44,6 +44,7 @@ OPENAI_BASE_URL=...
 OPENAI_MODEL=...                   
 OPENAI_EMBEDDING_MODEL=...         
 GITHUB_TOKEN=...                   
+GITHUB_WEBHOOK_SECRET=...
 ```
 
 ## Important Paths
@@ -84,6 +85,14 @@ ls -lah summaries          # one folder per repo
 find summaries -name summaries.json | head
 find summaries -name failed_files.json | head
 ```
+
+Optional webhook refresh path:
+
+```text
+POST /webhooks/github
+```
+
+The endpoint accepts signed GitHub `pull_request` webhooks, ignores unmerged PRs, and refreshes local summaries for changed files in configured repositories.
 
 ## Step 4: Ingest Summaries into Vector DB
 

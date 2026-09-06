@@ -27,7 +27,8 @@ EMBEDDING_SEED_TIMEOUT_SECONDS: Final[float] = float(
 )  # Timeout for embedding seed lookup.
 
 STRUCTURED_QUERY_MIN_SIMILARITY: Final[float] = float(
-    os.getenv("GRAPH_STRUCTURED_QUERY_MIN_SIMILARITY", "0.51")
+    os.getenv("GRAPH_STRUCTURED_QUERY_MIN_SIMILARITY", "0.42")
 )  # Cosine-similarity floor for structured-query routing.
+# Calibrated via evaluation/research_utils/calibrate_structured_query_threshold.py
 
 RANK_DECAY: Final[float] = float(os.getenv("GRAPH_RANK_DECAY", "0.35"))  # Hop penalty decay for graph paths.
