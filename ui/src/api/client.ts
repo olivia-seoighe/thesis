@@ -13,8 +13,8 @@ export async function sendQuery(
     body: JSON.stringify({
       query,
       ...(opts.source ? { source: opts.source } : {}),
-      top_k: opts.topK ?? 5,
-      mode: opts.mode ?? 'hybrid',
+      top_k: opts.topK ?? 10,
+      mode: opts.mode ?? 'hybrid-service-aware',
       conversation_id: opts.conversationId,
       model: opts.model,
     }),

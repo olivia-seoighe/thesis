@@ -5,8 +5,8 @@ from pydantic import BaseModel, ConfigDict
 class QueryRequest(BaseModel):
     query: str
     source: Optional[str] = None
-    top_k: int = 5
-    mode: str = "hybrid"              # retrieval mode: hybrid | vector | keyword | graph
+    top_k: int = 10
+    mode: str = "hybrid-service-aware"  # retrieval mode: hybrid-service-aware | hybrid | vector | keyword | graph
     model: Optional[str] = None       # overrides OPENAI_MODEL
     conversation_id: Optional[str] = None  # pass to continue a conversation
 

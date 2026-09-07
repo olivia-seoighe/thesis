@@ -5,6 +5,14 @@ import { getSources, sendQuery } from '../api/client'
 import type { Citation, Message } from '../types'
 import CitationCard from './CitationCard'
 
+const retrievalModes = [
+  { value: 'hybrid-service-aware', label: 'hybrid-service-aware' },
+  { value: 'hybrid', label: 'hybrid' },
+  { value: 'vector', label: 'vector' },
+  { value: 'keyword', label: 'keyword' },
+  { value: 'graph', label: 'graph' },
+]
+
 interface Props {
   conversationId: string | null
   initialMessages?: Message[]
@@ -18,8 +26,8 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
   const [error, setError] = useState('')
   const [sources, setSources] = useState<string[]>([])
   const [source, setSource] = useState('')
-  const [mode, setMode] = useState('hybrid')
-  const [topK, setTopK] = useState(5)
+  const [mode, setMode] = useState('hybrid-service-aware')
+  const [topK, setTopK] = useState(10)
   const [activeConvId, setActiveConvId] = useState<string | null>(conversationId)
   const [latencyInfo, setLatencyInfo] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -113,7 +121,7 @@ export default function ChatInterface({ conversationId, initialMessages = [], on
             onChange={e => setMode(e.target.value)}
             style={{ border: '1px solid #cbd5e0', borderRadius: 6, padding: '3px 8px', fontSize: 12, background: '#fff', cursor: 'pointer' }}
           >
-            {['hybrid', 'vector', 'keyword', 'graph'].map(m => <option key={m} value={m}>{m}</option>)}
+            {retrievalModes.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </label>
         <label style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -243,11 +251,14 @@ function ThinkingBubble() {
 }
 
 function WelcomeBanner({ source }: { source: string }) {
+  const serviceName = source || 'Service A'
   const examples = [
-    `What Kafka topics does ${source} consume or produce?`,
-    `What thresholds are used in ${source}?`,
-    `Which external APIs does ${source} depend on?`,
-    `How are processing state transitions handled?`,
+    `What Kafka topics does ${serviceName} consume and produce?`,
+    'Which external APIs does Service B call?',
+    'Which anonymised event handlers process inbound Kafka events?',
+    `What thresholds are used in ${serviceName}?`,
+    `Which external APIs does ${serviceName} depend on?`,
+    'How are processing state transitions handled?',
   ]
   return (
     <div style={{ textAlign: 'center', padding: '40px 20px' }}>

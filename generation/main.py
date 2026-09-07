@@ -2,7 +2,7 @@
 
 Endpoints:
     GET  /health
-    POST /query                  retrieval (hybrid/vector/keyword/graph) + LLM answer with citations
+    POST /query                  retrieval (hybrid-service-aware/hybrid/vector/keyword/graph) + LLM answer with citations
     GET  /conversations          list conversation history
     GET  /conversations/{id}     get one conversation
     DELETE /conversations/{id}   delete one conversation
@@ -126,23 +126,20 @@ async def _db_delete_conversation(conv_id: str) -> bool:
 
 # ── Retrieval helpers ─────────────────────────────────────────────────────────
 
-RETRIEVAL_MODES = ("hybrid", "vector", "keyword", "graph")
-RETRIEVAL_MODE_ALIASES: dict[str, str] = {
-    "graph-service-aware": "graph",
-    "hybrid-service-aware": "hybrid",
-    "keyword-service-aware": "keyword",
-    "vector-service-aware": "vector",
-}
+RETRIEVAL_MODES = ("hybrid-service-aware", "hybrid", "vector", "keyword", "graph")
 
 
 async def _retrieve(client: httpx.AsyncClient, query: str, source: str | None, top_k: int, mode: str) -> list:
-    mode = RETRIEVAL_MODE_ALIASES.get(mode, mode)
-    mode = mode if mode in RETRIEVAL_MODES else "hybrid"
+    mode = mode if mode in RETRIEVAL_MODES else "hybrid-service-aware"
+    endpoint_mode = "hybrid" if mode == "hybrid-service-aware" else mode
     params: dict = {"query": query, "top_k": top_k}
+    if mode == "hybrid-service-aware":
+        params["keyword_ranker"] = "bm25"
+        params["service_aware"] = "true"
     if source:
         params["source"] = source
     resp = await client.get(
-        f"{RETRIEVAL_URL}/search/{mode}",
+        f"{RETRIEVAL_URL}/search/{endpoint_mode}",
         params=params,
         timeout=30,
     )
@@ -167,7 +164,7 @@ async def query(req: QueryRequest) -> QueryResponse:
     source = req.source
     conv_id = req.conversation_id or str(uuid.uuid4())
 
-    # Retrieval — hybrid/vector/keyword/graph depending on req.mode
+    # Retrieval — hybrid-service-aware/hybrid/vector/keyword/graph depending on req.mode
     t_ret_start = time.time()
     async with httpx.AsyncClient() as client:
         try:
