@@ -21,15 +21,15 @@ Summaries are split into overlapping word-window chunks (1500 words, 15% overlap
 
 ### Retrieval Pipeline — Keyword · Vector · Hybrid · Graph
 
-The retrieval service exposes keyword (full-text/GIN), vector (cosine/HNSW), hybrid (Reciprocal Rank Fusion), and graph-based retrieval modes. Results are ranked and filtered by relevance score before passing to generation.
+The retrieval service exposes keyword (BM25), vector (cosine/HNSW), hybrid (Reciprocal Rank Fusion over keyword, vector, and graph), and graph traversal modes. The default UI path is service-aware hybrid retrieval: query text is matched against `service_acronyms.json`, then retrieval runs globally, with a hard service filter only for explicit local-scope questions and service boosting otherwise. The structured-first graph router is retained only under `archive/` because it added template complexity and was not kept as part of the simplified active system.
 
 ### Generation & UI — LLM Q&A Interface
 
-The generation service assembles retrieved context with citations and queries Claude to produce a grounded answer with multi-turn conversation support. The UI (`localhost:3000`) provides the chat interface.
+The generation service assembles retrieved context with citations and queries Claude to produce a grounded answer with multi-turn conversation support. The UI (`http://localhost:13000`) provides the chat interface when running through Docker Compose.
 
 ### Evaluation Framework
 
-The harness evaluates retrieval against the golden query set (`evaluation/datasets/v1`) and writes per-query metrics to `results.xlsx` (`results` sheet) plus aggregate sheets `category_results` and `difficulty_results` (recall, precision, F1, MRR, nDCG, hit_count, latency_ms).
+The harness evaluates retrieval against the golden query set (`evaluation/datasets/golden_queries_retrieval`) and writes per-query metrics to `results.xlsx` (`results` sheet) plus aggregate sheets `category_results` and `difficulty_results` (recall, precision, F1, MRR, nDCG, hit_count, latency_ms). The main strategy names are `keyword`, `vector`, `graph`, `hybrid`, and `hybrid-service-aware`; `keyword` and `hybrid` use BM25 keyword ranking.
 
 Service-aware variants (`*-service-aware`) derive routing from query text plus a service acronym catalogue (`service_acronyms.json`) or retrieval `/sources`, then apply metadata mode decisions (GLOBAL / HARD_FILTER / BOOST) and record routing fields alongside metrics.
 
@@ -114,6 +114,7 @@ docker compose --profile ingest down
 docker compose up -d retrieval generation ui
 curl -fsS http://localhost:18000/live
 curl -fsS http://localhost:18002/health
+curl -fsS -I http://localhost:13000
 ```
 
 UI URL:

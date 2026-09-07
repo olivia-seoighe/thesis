@@ -5,7 +5,7 @@ services:
     build:
       context: ./database
     environment:
-      POSTGRES_PASSWORD: ${PGPASSWORD:-ragpassword}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD in .env}
       POSTGRES_USER: raguser
       POSTGRES_DB: ragdb
       EMBEDDING_DIM: ${EMBEDDING_DIM:-3072}
@@ -46,7 +46,7 @@ services:
       PGPORT: 5432           # internal container port
       PGDATABASE: ragdb
       PGUSER: raguser
-      PGPASSWORD: ${PGPASSWORD:-ragpassword}
+      PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD in .env}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
@@ -98,7 +98,7 @@ services:
       PGPORT: 5432
       PGDATABASE: ragdb
       PGUSER: raguser
-      PGPASSWORD: ${PGPASSWORD:-ragpassword}
+      PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD in .env}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
@@ -125,11 +125,10 @@ services:
         condition: service_healthy
     environment:
       RETRIEVAL_URL: http://retrieval:8000
-      DATABASE_URL: postgresql://raguser:${PGPASSWORD:-ragpassword}@postgres:5432/ragdb
+      DATABASE_URL: postgresql://raguser:${PGPASSWORD:?Set PGPASSWORD in .env}@postgres:5432/ragdb
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_MODEL: ${OPENAI_MODEL:-claude-sonnet-4-6}
-      DEFAULT_SOURCE: sample-service
       LOG_LEVEL: INFO
     ports:
       - "${GENERATION_HOST_PORT:-18002}:8002"
