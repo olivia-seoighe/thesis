@@ -50,6 +50,9 @@ TABLE_ACTION_PREFIXES_BY_PREDICATE: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("READS_TABLE", READ_TABLE_PREFIXES),
     ("WRITES_TABLE", WRITE_TABLE_PREFIXES),
 )
+CS_IDENTIFIER = r"[^\W\d]\w*"
+CS_QUALIFIED_IDENTIFIER = rf"{CS_IDENTIFIER}(?:\.{CS_IDENTIFIER})*"
+CS_QUOTED_IDENTIFIER = rf"[\[`\"]?({CS_IDENTIFIER})[\]`\"]?"
 
 
 class AstLocalExtractor:
@@ -178,36 +181,48 @@ class AstLocalExtractor:
         stack = [tree.root_node]
         while stack:
             node = stack.pop()
-            if node.type in {"class_declaration", "record_declaration", "interface_declaration"}:
-                name_node = node.child_by_field_name("name")
-                if name_node:
-                    name = source_code[name_node.start_byte:name_node.end_byte]
-                    bases_node = node.child_by_field_name("bases")
-                    bases = ""
-                    if bases_node:
-                        bases = source_code[bases_node.start_byte:bases_node.end_byte]
-                    label = AstLocalExtractor._classify_class_symbol(name, bases)
-                    if label:
-                        key = (name, label)
-                        if key not in seen:
-                            seen.add(key)
-                            symbols.append(key)
+            if node.type not in {"class_declaration", "record_declaration", "interface_declaration"}:
+                stack.extend(node.children)
+                continue
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = source_code[name_node.start_byte:name_node.end_byte]
+                bases_node = node.child_by_field_name("bases")
+                bases = source_code[bases_node.start_byte:bases_node.end_byte] if bases_node else ""
+                AstLocalExtractor._append_class_symbol(symbols, seen, name=name, bases=bases)
             stack.extend(node.children)
 
         return symbols
 
     @staticmethod
+    def _append_class_symbol(
+        symbols: list[tuple[str, str]],
+        seen: set[tuple[str, str]],
+        *,
+        name: str,
+        bases: str,
+    ) -> None:
+        label = AstLocalExtractor._classify_class_symbol(name, bases)
+        if not label:
+            return
+        key = (name, label)
+        if key in seen:
+            return
+        seen.add(key)
+        symbols.append(key)
+
+    @staticmethod
     def _extract_csharp_symbols_regex(source_code: str) -> list[tuple[str, str]]:
         pattern = re.compile(
             r"^\s*(?:(?:public|internal|private|protected|sealed|abstract|static|partial)\s+)*"
-            r"(?:class|record|interface)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^{};]*\))?\s*(?::\s*([^{]+))?\{",
+            rf"(?:class|record|interface)\s+({CS_IDENTIFIER})([^\{{;]*)\{{",
             re.MULTILINE,
         )
         symbols: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for match in pattern.finditer(source_code):
             name = match.group(1)
-            bases = match.group(2) or ""
+            bases = AstLocalExtractor._extract_bases_from_header(match.group(2) or "")
             label = AstLocalExtractor._classify_class_symbol(name, bases)
             if not label:
                 continue
@@ -245,7 +260,7 @@ class AstLocalExtractor:
             return False
         return bool(
             re.search(
-                r"(?:(?:^|[,\s])(?:global::)?(?:[A-Za-z_][A-Za-z0-9_]*\.)*Saga\s*<)",
+                r"(?:^|[,\s])(?:global::)?(?:[A-Za-z_]\w*\.)*Saga\s*<",
                 token,
             )
         )
@@ -258,7 +273,7 @@ class AstLocalExtractor:
             return False
         return bool(
             re.search(
-                rf"(?:^|[,\s])(?:global::)?(?:[A-Za-z_][A-Za-z0-9_]*\.)*{re.escape(interface_name)}\b\s*(?:<[^>]*>)?\s*(?:,|$)",
+                rf"(?:^|[,\s])(?:global::)?(?:[A-Za-z_]\w*\.)*{re.escape(interface_name)}\b\s*(?:<[^>]*>)?\s*(?:,|$)",
                 token,
             )
         )
@@ -270,53 +285,84 @@ class AstLocalExtractor:
         relations: list[tuple[str, str, str, str, str]] = []
         seen: set[tuple[str, str, str, str, str]] = set()
         class_header_pattern = re.compile(
-            r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^{};]*\))?\s*(?::\s*([^{]+))?\{",
+            rf"\bclass\s+({CS_IDENTIFIER})([^\{{;]*)\{{",
             flags=re.MULTILINE,
         )
         interface_pattern = re.compile(
             r"\b(IHandleMessages|IAmStartedByMessages|IRequestHandler|INotificationHandler)"
-            r"\s*<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(?:,\s*[A-Za-z_][A-Za-z0-9_.<>]*\s*)?>"
+            rf"\s*<\s*({CS_QUALIFIED_IDENTIFIER})\s*(?:,\s*{CS_QUALIFIED_IDENTIFIER}(?:<[^>]*>)?\s*)?>"
         )
 
         class_headers = list(class_header_pattern.finditer(source_code))
-        local_labels: dict[str, str] = {}
-        for class_match in class_headers:
-            label = AstLocalExtractor._classify_class_symbol(class_match.group(1), class_match.group(2) or "")
-            if label:
-                local_labels[class_match.group(1)] = label
+        local_labels = AstLocalExtractor._build_local_class_labels(class_headers)
 
         for class_match in class_headers:
             class_name = class_match.group(1)
-            bases = class_match.group(2) or ""
+            bases = AstLocalExtractor._extract_bases_from_header(class_match.group(2) or "")
             class_label = AstLocalExtractor._classify_class_symbol(class_name, bases)
             if class_label not in {"HANDLER", "SAGA"}:
                 continue
             for iface_name, message_type in interface_pattern.findall(bases):
-                symbol_name = message_type.split(".")[-1]
-                symbol_label = local_labels.get(symbol_name) or AstLocalExtractor._classify_symbol(symbol_name)
-                if not symbol_label:
-                    continue
-                relation = AstLocalExtractor._resolve_handler_relation(
+                AstLocalExtractor._append_local_relation(
+                    relations=relations,
+                    seen=seen,
+                    local_labels=local_labels,
+                    class_name=class_name,
                     class_label=class_label,
                     iface_name=iface_name,
-                    symbol_label=symbol_label,
+                    message_type=message_type,
                 )
-                if relation is None:
-                    continue
-                predicate, object_label = relation
-                key = (class_name, class_label, predicate, symbol_name, object_label)
-                if key in seen:
-                    continue
-                seen.add(key)
-                relations.append(key)
         return relations
+
+    @staticmethod
+    def _extract_bases_from_header(header_tail: str) -> str:
+        return header_tail.split(":", 1)[1].strip() if ":" in header_tail else ""
+
+    @staticmethod
+    def _build_local_class_labels(class_headers: list[re.Match[str]]) -> dict[str, str]:
+        labels: dict[str, str] = {}
+        for class_match in class_headers:
+            bases = AstLocalExtractor._extract_bases_from_header(class_match.group(2) or "")
+            label = AstLocalExtractor._classify_class_symbol(class_match.group(1), bases)
+            if label:
+                labels[class_match.group(1)] = label
+        return labels
+
+    @staticmethod
+    def _append_local_relation(
+        *,
+        relations: list[tuple[str, str, str, str, str]],
+        seen: set[tuple[str, str, str, str, str]],
+        local_labels: dict[str, str],
+        class_name: str,
+        class_label: str,
+        iface_name: str,
+        message_type: str,
+    ) -> None:
+        symbol_name = message_type.split(".")[-1]
+        symbol_label = local_labels.get(symbol_name) or AstLocalExtractor._classify_symbol(symbol_name)
+        if not symbol_label:
+            return
+        relation = AstLocalExtractor._resolve_handler_relation(
+            class_label=class_label,
+            iface_name=iface_name,
+            symbol_label=symbol_label,
+        )
+        if relation is None:
+            return
+        predicate, object_label = relation
+        key = (class_name, class_label, predicate, symbol_name, object_label)
+        if key in seen:
+            return
+        seen.add(key)
+        relations.append(key)
 
     @staticmethod
     def _extract_refit_api_calls(source_code: str) -> list[str]:
         """Return interfaces that contain Refit HTTP verb attributes."""
         if not source_code.strip():
             return []
-        interface_pattern = re.compile(r"\binterface\s+([A-Za-z_][A-Za-z0-9_]*)")
+        interface_pattern = re.compile(r"\binterface\s+([A-Za-z_]\w*)")
         refit_attribute_pattern = re.compile(r"\[(?:Get|Post|Put|Delete|Patch|Head|Options)\(")
 
         matches = list(interface_pattern.finditer(source_code))
@@ -360,12 +406,12 @@ class AstLocalExtractor:
     def _extract_csharp_actor_blocks(source_code: str) -> list[tuple[str, str, str]]:
         blocks: list[tuple[str, str, str]] = []
         class_pattern = re.compile(
-            r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^{};]*\))?\s*(?::\s*([^{]+))?\{",
+            rf"\bclass\s+({CS_IDENTIFIER})([^\{{;]*)\{{",
             re.MULTILINE,
         )
         for match in class_pattern.finditer(source_code):
             class_name = match.group(1)
-            bases = match.group(2) or ""
+            bases = AstLocalExtractor._extract_bases_from_header(match.group(2) or "")
             class_label = AstLocalExtractor._classify_class_symbol(class_name, bases)
             if class_label not in {"HANDLER", "SAGA"}:
                 continue
@@ -393,7 +439,7 @@ class AstLocalExtractor:
 
     @staticmethod
     def _extract_table_action_target(identifier: str) -> list[tuple[str, str]]:
-        compact = re.sub(r"[^A-Za-z0-9_]", "", identifier)
+        compact = re.sub(r"\W", "", identifier)
         if not compact:
             return []
 
@@ -433,7 +479,7 @@ class AstLocalExtractor:
 
     @staticmethod
     def _table_name_variants(token: str) -> tuple[str, ...]:
-        normalized = re.sub(r"[^A-Za-z0-9]", "", token).lower()
+        normalized = re.sub(r"[\W_]", "", token).lower()
         if not normalized:
             return ()
         variants = [normalized]
@@ -485,7 +531,7 @@ class AstLocalExtractor:
         writes: set[str],
     ) -> None:
         for table_token in re.findall(
-            r"(?i)\b(?:from|join)\s+[\[`\"]?([A-Za-z_][A-Za-z0-9_]*)[\]`\"]?",
+            rf"(?i)\b(?:from|join)\s+{CS_QUOTED_IDENTIFIER}",
             actor_body,
         ):
             resolved = AstLocalExtractor._resolve_table_name(table_token, table_lookup)
@@ -493,7 +539,7 @@ class AstLocalExtractor:
                 reads.add(resolved)
 
         for table_token in re.findall(
-            r"(?i)\b(?:insert\s+into|update|delete\s+from)\s+[\[`\"]?([A-Za-z_][A-Za-z0-9_]*)[\]`\"]?",
+            rf"(?i)\b(?:insert\s+into|update|delete\s+from)\s+{CS_QUOTED_IDENTIFIER}",
             actor_body,
         ):
             resolved = AstLocalExtractor._resolve_table_name(table_token, table_lookup)
@@ -507,7 +553,7 @@ class AstLocalExtractor:
         reads: set[str],
         writes: set[str],
     ) -> None:
-        identifier_pattern = re.compile(r"\b(?:new\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[(<]")
+        identifier_pattern = re.compile(rf"\b(?:new\s+)?({CS_IDENTIFIER})\s*[(<]")
         for identifier in identifier_pattern.findall(actor_body):
             for predicate, table_token in AstLocalExtractor._extract_table_action_target(identifier):
                 resolved = AstLocalExtractor._resolve_table_name(table_token, table_lookup)
@@ -526,7 +572,7 @@ class AstLocalExtractor:
         writes: set[str],
     ) -> None:
         dbset_pattern = re.compile(
-            r"\b[_A-Za-z][_A-Za-z0-9]*Context\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b",
+            rf"\b{CS_IDENTIFIER}Context\s*\.\s*({CS_IDENTIFIER})\b",
             re.IGNORECASE,
         )
         for dbset in dbset_pattern.findall(actor_body):

@@ -5,6 +5,20 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+from indexing.graph.extraction_lexicon import (
+    API_CONFIG_PREFIXES,
+    API_NOISE_FRAGMENTS,
+    API_NOISE_SUFFIXES,
+    API_NOISE_TERMS,
+    API_URL_SUFFIXES,
+    CONFIG_TOPIC_PATH_FRAGMENTS,
+    FEATURE_FLAG_NOISE_FRAGMENTS,
+    FEATURE_FLAG_NOISE_TERMS,
+    HOST_PREFIX_NOISE_TERMS,
+    RAW_TOPIC_REFERENCE_FRAGMENTS,
+    TOPIC_NOISE_TERMS,
+    URL_PATH_NOISE_TERMS,
+)
 from indexing.graph.text_cleaning import clean_graph_text
 
 
@@ -22,7 +36,8 @@ class GraphCanonicalizer:
                 lowered = lowered[2:closing].strip()
         lowered = lowered.strip().strip('"\'')
         lowered = lowered.replace("`", "")
-        lowered = re.sub(r"^(?:apiurls|apiconfig|webapiconfig)[._-]*", "", lowered)
+        api_prefixes = "|".join(re.escape(prefix) for prefix in API_CONFIG_PREFIXES)
+        lowered = re.sub(rf"^(?:{api_prefixes})[._-]*", "", lowered)
 
         if lowered.startswith(("http://", "https://")):
             from_url = self._api_name_from_url(lowered)
@@ -43,7 +58,7 @@ class GraphCanonicalizer:
         if "okta" in lowered:
             return "oktaapi" if self._is_valid_api_name("oktaapi", raw=token) else ""
 
-        for suffix in ("baseurl", "url", "uri", "endpoint", "host", "domain", "address", "name"):
+        for suffix in API_URL_SUFFIXES:
             if lowered.endswith(suffix):
                 stem = lowered[: -len(suffix)].rstrip("._-")
                 stem_match = re.search(r"([a-z0-9]+api(?:v[0-9]+)?)$", stem)
@@ -110,44 +125,10 @@ class GraphCanonicalizer:
         if not re.fullmatch(r"[A-Za-z0-9._-]+", token):
             return ""
 
-        blocked_exact = {
-            "true",
-            "false",
-            "development",
-            "project",
-            "featureflags",
-            "launchdarkly",
-            "nuvoair",
-            "testvendor",
-            "heartbeathealth",
-        }
-        if lowered in blocked_exact:
+        if lowered in FEATURE_FLAG_NOISE_TERMS:
             return ""
 
-        blocked_fragments = (
-            "config",
-            "launchdarkly",
-            "licensekey",
-            "securityprotocol",
-            "supportedvendors",
-            "sectionname",
-            "descriptor",
-            "continueondeserializationerrors",
-            "continueonfailure",
-            "usepostgrespersistence",
-            "authsettings",
-            "new_relic",
-            "aspnetcore_environment",
-            "sasl_ssl",
-            "automapperlicensekey",
-            "ildclient",
-            "ilaunchdarklyservice",
-            "sdk-",
-            "permit__",
-            "productconfiguration__",
-            "kafkaconfig.",
-        )
-        if any(fragment in lowered for fragment in blocked_fragments):
+        if any(fragment in lowered for fragment in FEATURE_FLAG_NOISE_FRAGMENTS):
             return ""
 
         if lowered.startswith("enable") and len(token) > 6:
@@ -174,33 +155,13 @@ class GraphCanonicalizer:
             return False
         if name.count("api") > 2:
             return False
-        blocked_terms = {"api", "apiapi", "apiurls", "apiconfig", "webapiconfig", "defaultapi", "localhostapi"}
-        if name in blocked_terms:
+        if name in API_NOISE_TERMS:
             return False
-        blocked_fragments = {
-            "connectionstring",
-            "containername",
-            "blobcontainer",
-            "httpclienthandler",
-            "contentserializer",
-            "authorizationurl",
-            "allowautoredirect",
-            "baseaddress",
-            "servicecollection",
-            "defaulttenant",
-            "clientid",
-            "username",
-            "password",
-            "retry",
-            "timeout",
-            "policy",
-            "exception",
-        }
-        if any(fragment in name for fragment in blocked_fragments):
+        if any(fragment in name for fragment in API_NOISE_FRAGMENTS):
             return False
-        if any(part in raw_lower for part in ("kafkatopics__", "akkaconfig.topics", "kafkaconsumerconfig.topics")):
+        if any(part in raw_lower for part in CONFIG_TOPIC_PATH_FRAGMENTS):
             return False
-        if name.endswith(("client", "handler", "config", "serializer", "policy")):
+        if name.endswith(API_NOISE_SUFFIXES):
             return False
         return True
 
@@ -213,29 +174,11 @@ class GraphCanonicalizer:
             return False
         if candidate.isdigit():
             return False
-        if any(part in candidate for part in ("kafkatopics__", "akkaconfig.topics", "kafkaconsumerconfig.topics")):
+        if any(part in candidate for part in CONFIG_TOPIC_PATH_FRAGMENTS):
             return False
-        if any(part in raw.lower() for part in ("constants.outboundtopics.", "constants.kafka.", "akkaconfig.topics[", "kafkaconsumerconfig.topics")):
+        if any(part in raw.lower() for part in RAW_TOPIC_REFERENCE_FRAGMENTS):
             return False
-        if candidate in {
-            "status",
-            "result",
-            "results",
-            "performed",
-            "notperformed",
-            "orderheld",
-            "application/json",
-            "type",
-            "subscribe",
-            "commonheaders",
-            "context",
-            "eventid",
-            "guid",
-            "post",
-            "get",
-            "vendor",
-            "productcode",
-        }:
+        if candidate in TOPIC_NOISE_TERMS:
             return False
         if candidate.startswith(("http://", "https://")):
             return False
@@ -265,7 +208,7 @@ class GraphCanonicalizer:
         path_segments = [seg for seg in parsed.path.split("/") if seg]
         for segment in path_segments:
             seg = re.sub(r"[^a-z0-9_-]+", "", segment.lower())
-            if not seg or seg in {"api", "health", "live", "oauth2", "swagger"}:
+            if not seg or seg in URL_PATH_NOISE_TERMS:
                 continue
             candidate = re.search(r"([a-z0-9]+api(?:v[0-9]+)?)", seg)
             if candidate:
@@ -278,7 +221,7 @@ class GraphCanonicalizer:
         if not host_parts:
             return ""
         host_head = host_parts[0]
-        if host_head in {"api", "dev", "prod", "staging", "localhost", "default", "hooks"} and len(host_parts) > 1:
+        if host_head in HOST_PREFIX_NOISE_TERMS and len(host_parts) > 1:
             host_head = host_parts[1]
         host_head = re.sub(r"[^a-z0-9_-]+", "", host_head)
         if not host_head:

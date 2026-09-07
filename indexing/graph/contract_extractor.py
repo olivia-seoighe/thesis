@@ -22,12 +22,16 @@ from indexing.graph.config import (
     CONTRACT_TOPIC_CONFIDENCE,
 )
 from indexing.graph.csharp_feature_flags import extract_feature_flags_from_csharp
+from indexing.graph.extraction_lexicon import (
+    CONFIG_API_HOST_SKIP_FRAGMENTS,
+    CONFIG_API_KEY_SKIP_FRAGMENTS,
+    CONFIG_TOPIC_KEYS,
+)
 from indexing.graph.graph_canonicalizer import GraphCanonicalizer
 from indexing.graph.models import Triple
 from indexing.graph.ontology import TIER_CONTRACT_GLOBAL
 from indexing.graph.text_cleaning import clean_graph_text
 
-SOURCE_KIND_AST = "ast"
 SOURCE_KIND_CONTRACT = "contract"
 SOURCE_KIND_ASYNCAPI = "asyncapi"
 SOURCE_KIND_CONFIGMAP = "configmap"
@@ -52,11 +56,6 @@ SECTION_TOPICS_CONSUMED = "topics consumed"
 SECTION_TOPICS_PRODUCED = "topics produced"
 SECTION_EXTERNAL_APIS = "external api calls"
 SECTION_PUBLIC_API = "public api surface"
-
-TOPIC_KEYS = {"topics", "kafkatopic", "kafkatopics", "consumers", "producers"}
-URL_SKIP_KEY_FRAGMENTS = ("okta", "health", "relic", "pdp", "swagger")
-URL_SKIP_HOST_FRAGMENTS = ("okta", "login", "auth", "identity")
-
 
 def _dedupe_normalized(values: list[str], normalize_fn: Callable[[str], str]) -> list[str]:
     """Normalize each value, drop empties, and dedupe on the normalized form."""
@@ -103,24 +102,6 @@ class ContractGlobalExtractor:
     def parse_sections(self, summary: str) -> dict[str, str]:
         return self._parse_sections(summary)
 
-    def extract(
-        self,
-        summary: str,
-        document_title: str,
-        service: str,
-        source_code: str = "",
-    ) -> list[Triple]:
-        """Backward-compatible wrapper around contract extraction."""
-        repo_name = clean_graph_text(service)
-        if not repo_name:
-            return []
-        return self.extract_contract(
-            summary=summary,
-            document_title=document_title,
-            repo_name=repo_name,
-            source_code=source_code,
-        )
-
     def _extract_contract_global(
         self,
         *,
@@ -145,113 +126,91 @@ class ContractGlobalExtractor:
             source_kind=source_kind,
         )
 
+        # Emits same-subject contract triples for one extracted value set.
+        def emit_values(values: list[str], *, predicate: str, object_label: str, confidence: float) -> None:
+            for value in values:
+                add_triple(
+                    subject=repo_name,
+                    subject_label="REPO",
+                    predicate=predicate,
+                    obj=value,
+                    object_label=object_label,
+                    confidence=confidence,
+                )
+
         if source_kind == SOURCE_KIND_CSPROJ:
             target_frameworks, package_refs = self._extract_csproj_metadata(source_code)
-            for framework in target_frameworks:
-                add_triple(
-                    subject=repo_name,
-                    subject_label="REPO",
-                    predicate="TARGETS_FRAMEWORK",
-                    obj=framework,
-                    object_label="FRAMEWORK",
-                    confidence=CONTRACT_CSPROJ_METADATA_CONFIDENCE,
-                )
-            for package_name in package_refs:
-                add_triple(
-                    subject=repo_name,
-                    subject_label="REPO",
-                    predicate="CONTAINS_PACKAGE",
-                    obj=package_name,
-                    object_label="NUGET_PACKAGE",
-                    confidence=CONTRACT_CSPROJ_METADATA_CONFIDENCE,
-                )
+            emit_values(
+                target_frameworks,
+                predicate="TARGETS_FRAMEWORK",
+                object_label="FRAMEWORK",
+                confidence=CONTRACT_CSPROJ_METADATA_CONFIDENCE,
+            )
+            emit_values(
+                package_refs,
+                predicate="CONTAINS_PACKAGE",
+                object_label="NUGET_PACKAGE",
+                confidence=CONTRACT_CSPROJ_METADATA_CONFIDENCE,
+            )
             return triples
 
-        for topic in self._extract_topic_values(
-            sections,
-            SECTION_TOPICS_CONSUMED,
-            source_kind=source_kind,
-            source_code=source_code,
-        ):
-            add_triple(
-                subject=repo_name,
-                subject_label="REPO",
-                predicate="CONSUMES_TOPIC",
-                obj=topic,
-                object_label="KAFKA_TOPIC",
-                confidence=CONTRACT_TOPIC_CONFIDENCE,
-            )
-
-        for topic in self._extract_topic_values(
-            sections,
-            SECTION_TOPICS_PRODUCED,
-            source_kind=source_kind,
-            source_code=source_code,
-        ):
-            add_triple(
-                subject=repo_name,
-                subject_label="REPO",
-                predicate="PRODUCES_TOPIC",
-                obj=topic,
-                object_label="KAFKA_TOPIC",
-                confidence=CONTRACT_TOPIC_CONFIDENCE,
-            )
-
-        for api_name in self._extract_api_values(
-            sections,
-            source_kind=source_kind,
-            source_code=source_code,
-        ):
-            add_triple(
-                subject=repo_name,
-                subject_label="REPO",
-                predicate="CALLS_API",
-                obj=api_name,
-                object_label="API",
-                confidence=CONTRACT_API_CONFIDENCE,
-            )
-
-        for flag_name in self._extract_feature_flag_values(
-            sections,
-            source_kind=source_kind,
-            source_code=source_code,
-        ):
-            add_triple(
-                subject=repo_name,
-                subject_label="REPO",
-                predicate="USES_FEATURE_FLAG",
-                obj=flag_name,
-                object_label="FEATURE_FLAG",
-                confidence=CONTRACT_FLAG_CONFIDENCE,
-            )
+        extraction_rules = (
+            (
+                self._extract_topic_values(
+                    sections,
+                    SECTION_TOPICS_CONSUMED,
+                    source_kind=source_kind,
+                    source_code=source_code,
+                ),
+                "CONSUMES_TOPIC",
+                "KAFKA_TOPIC",
+                CONTRACT_TOPIC_CONFIDENCE,
+            ),
+            (
+                self._extract_topic_values(
+                    sections,
+                    SECTION_TOPICS_PRODUCED,
+                    source_kind=source_kind,
+                    source_code=source_code,
+                ),
+                "PRODUCES_TOPIC",
+                "KAFKA_TOPIC",
+                CONTRACT_TOPIC_CONFIDENCE,
+            ),
+            (
+                self._extract_api_values(sections, source_kind=source_kind, source_code=source_code),
+                "CALLS_API",
+                "API",
+                CONTRACT_API_CONFIDENCE,
+            ),
+            (
+                self._extract_feature_flag_values(sections, source_kind=source_kind, source_code=source_code),
+                "USES_FEATURE_FLAG",
+                "FEATURE_FLAG",
+                CONTRACT_FLAG_CONFIDENCE,
+            ),
+        )
+        for values, predicate, object_label, confidence in extraction_rules:
+            emit_values(values, predicate=predicate, object_label=object_label, confidence=confidence)
 
         if self._is_schema_state_document(document_title):
-            for table_name in self._extract_schema_state_tables(
-                summary_text=summary_text,
-                source_code=source_code,
-            ):
-                add_triple(
-                    subject=repo_name,
-                    subject_label="REPO",
-                    predicate="OWNS_TABLE",
-                    obj=table_name,
-                    object_label="TABLE",
-                    confidence=CONTRACT_TABLE_CONFIDENCE,
-                )
+            emit_values(
+                self._extract_schema_state_tables(summary_text=summary_text, source_code=source_code),
+                predicate="OWNS_TABLE",
+                object_label="TABLE",
+                confidence=CONTRACT_TABLE_CONFIDENCE,
+            )
 
         if source_kind == SOURCE_KIND_INGRESS:
             endpoint_values = self._extract_public_api_targets(source_code)
             if not endpoint_values:
                 endpoint_values = self._extract_public_api_targets(sections.get(SECTION_PUBLIC_API, ""))
-            for endpoint in endpoint_values:
-                add_triple(
-                    subject=repo_name,
-                    subject_label="REPO",
-                    predicate="EXPOSES_API",
-                    obj=endpoint,
-                    object_label="API",
-                    confidence=CONTRACT_EXPOSES_API_CONFIDENCE,
-                )
+            emit_values(
+                endpoint_values,
+                predicate="EXPOSES_API",
+                object_label="API",
+                confidence=CONTRACT_EXPOSES_API_CONFIDENCE,
+            )
 
         return triples
 
@@ -445,13 +404,7 @@ class ContractGlobalExtractor:
         raw_urls: list[str] = []
         if source_kind in {SOURCE_KIND_CONFIGMAP, SOURCE_KIND_APPSETTINGS_PROD, SOURCE_KIND_APPSETTINGS_BASE}:
             for key_name, url in self._extract_api_urls_from_config_source(source_code, source_kind=source_kind):
-                # A config entry's key and its URL value often name the same call two
-                # different ways (e.g. "InternalLabResultApiUrl" -> "https://rms-ilr-api...").
-                # Emit both: the key matches what the code side's own citations already
-                # canonicalize to, while the URL is a cross-repo-consistent anchor (derived
-                # from the actual target host, not each repo's own naming choice) -- needed
-                # when different repos name the same real target differently. Identical
-                # canonicalizations collapse naturally via the seen-dedup below.
+                # Keep both key and URL because repos may name the same target differently.
                 raw_urls.append(key_name)
                 raw_urls.append(url)
 
@@ -487,7 +440,7 @@ class ContractGlobalExtractor:
         source_code: str,
     ) -> list[str]:
         values: list[str] = []
-        if source_kind in {SOURCE_KIND_AST, SOURCE_KIND_CONTRACT}:
+        if source_kind == SOURCE_KIND_CONTRACT:
             values.extend(extract_feature_flags_from_csharp(source_code))
         elif source_kind in {SOURCE_KIND_CONFIGMAP, SOURCE_KIND_APPSETTINGS_PROD, SOURCE_KIND_APPSETTINGS_BASE}:
             values.extend(self._extract_feature_flags_from_config_source(source_code=source_code, source_kind=source_kind))
@@ -498,16 +451,7 @@ class ContractGlobalExtractor:
 
     @staticmethod
     def _parse_asyncapi_operations(source_code: str) -> tuple[list[str], list[str]]:
-        """Parse an AsyncAPI 3.x document into (produced, consumed) channel names.
-
-        AsyncAPI 3.x moves publish/subscribe direction out of `channels:` (which
-        only declares channel names/addresses) into a separate `operations:`
-        block, where each operation has an `action: send|receive` and a
-        `channel: $ref: '#/channels/<key>'`. Direction cannot be determined
-        from `channels:` alone -- older code here (and older AsyncAPI 2.x
-        documents, which nest publish/subscribe directly under each channel)
-        is not handled and yields no results.
-        """
+        """Parse AsyncAPI 3.x operations into produced and consumed channels."""
         if not source_code.strip():
             return [], []
         lines = source_code.replace("\r\n", "\n").replace("\r", "\n").splitlines()
@@ -761,7 +705,7 @@ class ContractGlobalExtractor:
                         "cons" if "consumer" in key_lower else
                         context
                     )
-                    if key_lower in TOPIC_KEYS:
+                    if key_lower in CONFIG_TOPIC_KEYS:
                         target = consumed if next_context == "cons" else produced
                         target.update(as_strings(value))
                     if isinstance(value, (dict, list)):
@@ -791,10 +735,10 @@ class ContractGlobalExtractor:
                         isinstance(value, str)
                         and value.startswith(("http://", "https://"))
                         and "api" in key_lower
-                        and not any(fragment in key_lower for fragment in URL_SKIP_KEY_FRAGMENTS)
+                        and not any(fragment in key_lower for fragment in CONFIG_API_KEY_SKIP_FRAGMENTS)
                     ):
                         host = (urlparse(value).hostname or "").lower()
-                        if not any(fragment in host for fragment in URL_SKIP_HOST_FRAGMENTS):
+                        if not any(fragment in host for fragment in CONFIG_API_HOST_SKIP_FRAGMENTS):
                             found.setdefault(key_token, value)
                     else:
                         walk(value)

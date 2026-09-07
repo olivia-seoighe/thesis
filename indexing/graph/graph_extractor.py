@@ -28,9 +28,6 @@ class GraphExtractor:
         self._contract_extractor = ContractGlobalExtractor()
         self._repo_owned_tables: dict[str, set[str]] = {}
 
-    def register_repo_files(self, repo_name: str, file_paths: list[str]) -> None:
-        self._contract_extractor.register_repo_files(repo_name, file_paths)
-
     def extract(
         self,
         summary: str,
