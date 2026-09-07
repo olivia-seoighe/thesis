@@ -25,9 +25,15 @@ def build_seed_lookup_query(seed: EntityMention) -> CypherSpec:
                     OR ($label = '' AND toLower(n.node_key) CONTAINS toLower($name))
                     OR replace(toLower(n.name), '_', '-') = replace(toLower($name), '_', '-')
                     OR replace(toLower(n.name), '_', '-') CONTAINS replace(toLower($name), '_', '-')
+                    OR replace(replace(toLower(n.name), '_', '-'), '.', '') = replace(replace(toLower($name), '_', '-'), '.', '')
+                    OR replace(replace(toLower(n.name), '_', '-'), '.', '') CONTAINS replace(replace(toLower($name), '_', '-'), '.', '')
                     OR (
                       $label = ''
                       AND replace(toLower(n.node_key), '_', '-') CONTAINS replace(toLower($name), '_', '-')
+                    )
+                    OR (
+                      $label = ''
+                      AND replace(replace(toLower(n.node_key), '_', '-'), '.', '') CONTAINS replace(replace(toLower($name), '_', '-'), '.', '')
                     )
                   )
                 RETURN n.node_key AS node_key, n.label AS node_label, n.name AS node_name
@@ -96,11 +102,7 @@ def build_embedding_seed_lookup_query(
     top_k_per_label: int,
     min_similarity: float,
 ) -> CypherSpec:
-    """Nearest-neighbor lookup against precomputed graph_node_name_embeddings.
-
-    Plain Postgres query (no ag_catalog.cypher) -- CypherSpec is reused here as a
-    generic SQL+params container, matching how build_evidence_query already uses it.
-    """
+    """Build nearest-neighbor lookup over graph node name embeddings."""
     sql = """
         WITH ranked AS (
             SELECT
@@ -338,9 +340,7 @@ def build_structured_distinct_pairs_query(
     object_keys: list[str] | None = None,
     source_repos: list[str] | None = None,
 ) -> CypherSpec:
-    """Cheap planning query for the structured router: which repos have any
-    graph_edge_evidence for this predicate (optionally restricted to a specific
-    anchor object and/or repo set)."""
+    """Find repos with edge evidence for a structured predicate."""
     sql = """
         SELECT DISTINCT source_repo, object_key, object_name
         FROM graph_edge_evidence
@@ -358,12 +358,7 @@ def build_structured_evidence_rows_query(
     source_repos: list[str] | None = None,
     retrieval_corpus: str,
 ) -> CypherSpec:
-    """Citable evidence rows for the structured router, one per (repo, file),
-    joined straight to document_embeddings/document_metadata -- mirrors
-    build_evidence_query's LATERAL-fallback-then-join pattern, but keyed off
-    graph_edge_evidence directly (edge-level facts) rather than graph_node_evidence
-    (node-declaration facts), since chunk_id is always NULL for these predicates
-    and document_id is always populated, so the fallback path is always taken."""
+    """Build citable evidence rows for structured-router edge facts."""
     sql = """
         WITH matched AS (
             SELECT DISTINCT ON (source_repo, source_path)
