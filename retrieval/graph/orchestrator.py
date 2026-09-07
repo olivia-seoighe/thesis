@@ -19,7 +19,6 @@ from .hop_policy import plan_traversal, prune_frontier_rows
 from .queries import build_evidence_query, build_frontier_expansion_query
 from .ranker import aggregate_to_chunks, extract_query_terms
 from .seed_resolver import resolve_seeds
-from .structured_router import maybe_route_structured_query
 from .types import (
     EvidenceBundle,
     GraphScope,
@@ -48,20 +47,8 @@ class GraphClient:
         self.cm = connection_manager
         self._service_aliases = self._load_service_aliases(service_catalogue_path)
 
-    async def structured_search(self, request: SearchRequest, *, start_time: float | None = None) -> SearchResponse | None:
-        return await maybe_route_structured_query(
-            request,
-            search_client=self.cm,
-            service_aliases=self._service_aliases,
-            start_time=start_time if start_time is not None else time.time(),
-        )
-
     async def search(self, request: SearchRequest) -> SearchResponse:
         start_time = time.time()
-
-        structured_response = await self.structured_search(request, start_time=start_time)
-        if structured_response is not None:
-            return structured_response
 
         seed_start = time.time()
         query_for_seeding, mentions = build_query_seed_mentions(request.query, self._service_aliases)

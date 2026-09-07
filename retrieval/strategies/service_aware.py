@@ -13,6 +13,8 @@ from retrieval.query_processor import expand_query_text, normalize_query_token, 
 from retrieval.strategies.rrf import reciprocal_rank
 
 SERVICE_AWARE_SUFFIX = "-service-aware"
+SERVICE_AWARE_BOOST_OVERFETCH_FACTOR = 3
+SERVICE_AWARE_BOOST_OVERFETCH_CAP = 60
 
 
 class MetadataMode(StrEnum):
@@ -97,8 +99,14 @@ class ServiceAwarePlanner:
         self.aliases_by_length = tuple(sorted(alias_map.keys(), key=len, reverse=True))
 
     def plan(self, query_text: str) -> ServiceAwareDecision:
+        original_detected, original_ambiguous = self._detect_services(query_text)
         expanded_query_text = expand_query_text(query_text, self.entries)
         detected, ambiguous = self._detect_services(expanded_query_text)
+        if len(original_detected) == 1 and not original_ambiguous and self._is_explicitly_local_query(
+            query_text=query_text,
+            matched_service_text=tuple(original_detected.values())[0].query_text,
+        ):
+            detected, ambiguous = original_detected, set()
         metadata_mode, reason = self._classify_metadata_mode(
             query_text=query_text,
             detected=detected,
@@ -198,18 +206,27 @@ class ServiceAwarePlanner:
         lowered = text.lower()
         if "all services" in lowered or "across services" in lowered:
             return True
-        return bool(re.search(r"\b(which|what)\s+(?:\w+\s+){0,3}services?\b", lowered))
+        return bool(
+            re.search(
+                r"\b(?:which|what)\s+"
+                r"(?:(?:downstream|upstream|external|internal|other|product|source|target|consumer|producer)\s+){0,3}"
+                r"services?\b",
+                lowered,
+            )
+        )
 
     @staticmethod
     def _is_explicitly_local_query(*, query_text: str, matched_service_text: str) -> bool:
         lowered = query_text.lower()
-        service = re.escape(matched_service_text.lower())
+        service_parts = [re.escape(part) for part in matched_service_text.lower().split("-") if part]
+        service = r"[\s-]+".join(service_parts)
         if re.search(rf"\b(in|within|inside)\s+{service}\b", lowered):
             return True
         if re.search(rf"\b{service}\s*'s\b", lowered):
             return True
+        if re.search(rf"\b(what|which|how)\b.+\bdoes\s+{service}\b", lowered):
+            return True
         return bool(re.search(rf"\bhow\s+does\s+{service}\b", lowered))
-
 
 def resolve_strategy_decision(
     *,
@@ -234,12 +251,19 @@ def run_service_aware_strategy(
     retrieval_corpus: str,
 ) -> ServiceAwareStrategyResult:
     try:
-        chunks = search(base_strategy, query_text, top_k, decision.filter_services, retrieval_corpus)
+        search_top_k = top_k
+        if decision.metadata_mode == MetadataMode.BOOST:
+            search_top_k = min(
+                top_k * SERVICE_AWARE_BOOST_OVERFETCH_FACTOR,
+                SERVICE_AWARE_BOOST_OVERFETCH_CAP,
+            )
+        chunks = search(base_strategy, query_text, search_top_k, decision.filter_services, retrieval_corpus)
         if decision.metadata_mode == MetadataMode.BOOST:
             chunks = apply_service_boost(
                 chunks=chunks,
                 boost_services=decision.boost_services,
             )
+        chunks = chunks[:top_k]
         return ServiceAwareStrategyResult(
             chunks=chunks,
             strategy_error="",
