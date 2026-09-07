@@ -87,11 +87,10 @@ def parse_args() -> argparse.Namespace:
         default=",".join(DEFAULT_STRATEGIES),
         help=(
             "Comma-separated strategies. Default subset: "
-            "graph-service-aware,hybrid,hybrid-service-aware,keyword-service-aware,vector-service-aware. "
-            "Keyword variants: keyword (default fts), keyword-fts, keyword-bm25. "
-            "Hybrid variants: hybrid (default fts), hybrid-fts, hybrid-bm25. "
-            "Graph variant: graph. "
-            "Service-aware variant: append -service-aware (e.g. vector-service-aware)."
+            "keyword,vector,graph,hybrid,hybrid-service-aware. "
+            "Keyword variants: keyword (default bm25), keyword-fts, keyword-bm25. "
+            "Hybrid variants: hybrid (default bm25), hybrid-fts, hybrid-bm25. "
+            "Graph variant: graph."
         ),
     )
     parser.add_argument(

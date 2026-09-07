@@ -35,7 +35,8 @@ class StrategyRunner:
         "hybrid": "/search/hybrid",
         "hybrid-fts": "/search/hybrid",
         "hybrid-bm25": "/search/hybrid",
-        "hybrid-bm25-structured-first": "/search/hybrid",
+        "hybrid-service-aware": "/search/hybrid",
+        "hybrid-bm25-service-aware": "/search/hybrid",
         "graph": "/search/graph",
     }
 
@@ -65,10 +66,20 @@ class StrategyRunner:
         params["corpus"] = retrieval_corpus
         if strategy in {"keyword-fts", "hybrid-fts"}:
             params["keyword_ranker"] = "fts"
-        elif strategy in {"keyword-bm25", "hybrid-bm25", "hybrid-bm25-structured-first"}:
+        elif strategy in {
+            "keyword",
+            "keyword-bm25",
+            "hybrid",
+            "hybrid-bm25",
+            "hybrid-service-aware",
+            "hybrid-bm25-service-aware",
+        }:
             params["keyword_ranker"] = "bm25"
-        if strategy == "hybrid-bm25-structured-first":
-            params["structured_first"] = "true"
+        if strategy in {
+            "hybrid-service-aware",
+            "hybrid-bm25-service-aware",
+        }:
+            params["service_aware"] = "true"
 
         url = f"{self.base_url}{endpoint}?{urlencode(params)}"
         request = Request(url=url, method="GET")
@@ -166,7 +177,14 @@ class StrategyRunner:
         ranker_value = metadata.get("keyword_ranker")
         keyword_ranker = str(ranker_value).strip() if isinstance(ranker_value, str) else ""
         if not keyword_ranker:
-            if strategy in {"keyword-bm25", "hybrid-bm25", "hybrid-bm25-structured-first"}:
+            if strategy in {
+                "keyword",
+                "keyword-bm25",
+                "hybrid",
+                "hybrid-bm25",
+                "hybrid-service-aware",
+                "hybrid-bm25-service-aware",
+            }:
                 keyword_ranker = "bm25"
             elif strategy in {"keyword", "keyword-fts", "hybrid", "hybrid-fts"}:
                 keyword_ranker = "fts"

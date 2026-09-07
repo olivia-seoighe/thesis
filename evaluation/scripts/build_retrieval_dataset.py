@@ -1,4 +1,4 @@
-"""Build a frozen retrieval dataset from golden_queries.json."""
+"""Build a frozen retrieval dataset from a golden query JSON file."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         "--input-json",
         type=Path,
         default=DEFAULT_GOLDEN_JSON,
-        help="Path to golden_queries.json.",
+        help="Path to the golden query JSON file.",
     )
     parser.add_argument(
         "--output-dir",
